@@ -1,8 +1,8 @@
 use crate::cli::PlotArgs;
+use crate::trvz::allele_plot::plot_alleles;
 use crate::trvz::params::pick_params;
 use crate::trvz::waterfall_plot::plot_waterfall;
-use crate::trvz::{allele_plot::plot_alleles, input};
-use crate::utils::{open_catalog_reader, open_genome_reader, Result};
+use crate::utils::{input, open_catalog_reader, open_genome_reader, Result};
 use pipeplot::generate_image;
 
 pub fn trvz(args: PlotArgs) -> Result<()> {

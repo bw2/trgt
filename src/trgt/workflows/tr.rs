@@ -6,39 +6,30 @@ use crate::hmm::{
 use crate::trgt::{
     genotype::{find_tr_spans, genotype_cluster, genotype_flank, genotype_size, Gt},
     locus::Locus,
-    reads::{get_rq_tag, HiFiRead},
+    reads::HiFiRead,
 };
 use crate::utils::{Genotyper, Ploidy, Result};
 use itertools::{izip, Itertools};
-use rand::{rngs::StdRng, Rng, SeedableRng};
-use rust_htslib::bam::{self, Read, Record};
-use std::vec;
+use std::{mem, vec};
 
 pub struct Params {
     pub min_flank_id_frac: f64,
-    pub min_read_qual: f64,
+    pub min_read_qual: f32,
     pub search_flank_len: usize,
     pub max_depth: usize,
 }
 
-pub fn analyze(
-    locus: &Locus,
-    params: &Params,
-    bam: &mut bam::IndexedReader,
-) -> Result<LocusResult> {
+pub fn analyze(mut locus: Locus, params: &Params) -> (Locus, Result<LocusResult>) {
     if locus.ploidy == Ploidy::Zero {
-        return Ok(LocusResult::empty());
+        return (locus, Ok(LocusResult::empty()));
     }
-    let reads = extract_reads(locus, bam, params)?;
-    let clip_radius = 2 * params.search_flank_len;
-    let reads = clip_reads(locus, clip_radius, reads);
-    log::debug!("{}: {} reads left after clipping", locus.id, reads.len());
 
-    let (reads, spans) = get_spanning_reads(locus, params, reads);
+    let reads = mem::take(&mut locus.reads);
+    let (reads, spans) = get_spanning_reads(&locus, params, reads);
 
-    const MIN_RQ_FOR_PURITY: f64 = 0.9;
+    const MIN_RQ_FOR_PURITY: f32 = 0.9;
     let (reads, spans) = if params.min_read_qual < MIN_RQ_FOR_PURITY {
-        let ret = filter_impure_trs(locus, &reads, &spans, MIN_RQ_FOR_PURITY);
+        let ret = filter_impure_trs(&locus, &reads, &spans, MIN_RQ_FOR_PURITY);
         if ret.0.len() < reads.len() {
             log::warn!(
                 "{}: Filtered out {} impure reads",
@@ -52,7 +43,7 @@ pub fn analyze(
     };
 
     if reads.is_empty() {
-        return Ok(LocusResult::empty());
+        return (locus, Ok(LocusResult::empty()));
     }
 
     let trs = reads
@@ -68,13 +59,13 @@ pub fn analyze(
 
     // Attempt flank re-genotyping only if alleles have similar length
     if gt.len() == 2 && gt[0].size.abs_diff(gt[1].size) <= 10 {
-        let snp_result = genotype_flank::genotype(&reads, &trs);
+        let snp_result = genotype_flank::genotype(&reads, &trs, &locus.region);
         if let Some((snp_gt, snp_alleles, snp_assignment)) = snp_result {
             (gt, allele_seqs, classification) = (snp_gt, snp_alleles, snp_assignment);
         }
     }
 
-    let annotations = label_with_hmm(locus, &allele_seqs);
+    let annotations = label_with_hmm(&locus, &allele_seqs);
 
     let spanning_by_hap = [
         classification.iter().filter(|&x| *x == 0).count(),
@@ -100,12 +91,15 @@ pub fn analyze(
         }
     }
 
-    Ok(LocusResult {
-        genotype,
-        reads,
-        tr_spans: spans,
-        classification,
-    })
+    (
+        locus,
+        Ok(LocusResult {
+            genotype,
+            reads,
+            tr_spans: spans,
+            classification,
+        }),
+    )
 }
 
 fn get_spanning_reads(
@@ -154,7 +148,11 @@ fn get_spanning_reads(
     }
 
     // Sort and (possibly) downsample
-    reads_and_spans.sort_by(|(_ra, sa), (_rb, sb)| (sa.1 - sa.0).cmp(&(sb.1 - sb.0)));
+    reads_and_spans.sort_by(|(ra, sa), (rb, sb)| {
+        (sa.1 - sa.0)
+            .cmp(&(sb.1 - sb.0))
+            .then_with(|| ra.id.cmp(&rb.id))
+    });
     if reads_and_spans.len() > params.max_depth {
         uniform_downsample(&mut reads_and_spans, params.max_depth);
         log::debug!(
@@ -181,18 +179,6 @@ fn uniform_downsample(reads_and_spans: &mut Vec<(HiFiRead, (usize, usize))>, out
         fast += step;
     }
     reads_and_spans.truncate(output_length);
-}
-
-fn clip_reads(locus: &Locus, radius: usize, reads: Vec<HiFiRead>) -> Vec<HiFiRead> {
-    let region = (
-        locus.region.start as i64 - radius as i64,
-        locus.region.end as i64 + radius as i64,
-    );
-
-    reads
-        .into_iter()
-        .filter_map(|read| read.clip_to_region(region))
-        .collect_vec()
 }
 
 fn get_meth(gt: &Gt, reads: &[HiFiRead], spans: &[(usize, usize)]) -> Vec<Option<f64>> {
@@ -265,101 +251,6 @@ fn assign_read(gt: &Gt, tr_len: usize) -> Assignment {
     Assignment::None
 }
 
-fn extract_reads(
-    locus: &Locus,
-    bam: &mut bam::IndexedReader,
-    params: &Params,
-) -> Result<Vec<HiFiRead>> {
-    let flank_len = params.search_flank_len as u32;
-    let min_read_qual = params.min_read_qual;
-    let reservoir_threshold = params.max_depth * 3;
-
-    let extraction_region = (
-        locus.region.contig.as_str(),
-        locus.region.start.saturating_sub(flank_len),
-        locus.region.end + flank_len,
-    );
-
-    let mut reads = Vec::new();
-    if let Err(msg) = bam.fetch(extraction_region) {
-        log::warn!("Fetch error: {}", msg);
-        return Ok(reads);
-    }
-
-    let mut n_filt = 0;
-    let mut n_reads = 0;
-    let mut record = Record::new();
-    while n_reads < reservoir_threshold {
-        match bam.read(&mut record) {
-            Some(Ok(_)) => {
-                if record.is_supplementary() || record.is_secondary() {
-                    continue;
-                }
-
-                if get_rq_tag(&record).unwrap_or(1.0) < min_read_qual {
-                    n_filt += 1;
-                    continue;
-                }
-
-                reads.push(HiFiRead::from_hts_rec(&record, &locus.region));
-                n_reads += 1;
-            }
-            Some(Err(err)) => Err(err.to_string())?,
-            None => break,
-        }
-    }
-
-    // If more reads are available and the reservoir is full -> reservoir sample
-    if n_reads >= reservoir_threshold {
-        log::warn!("{}: Reservoir sampling reads", locus.id);
-        let mut rng = StdRng::seed_from_u64(42);
-
-        while let Some(result) = bam.read(&mut record) {
-            match result {
-                Ok(_) => {
-                    if record.is_supplementary() || record.is_secondary() {
-                        continue;
-                    }
-
-                    if get_rq_tag(&record).unwrap_or(1.0) < min_read_qual {
-                        n_filt += 1;
-                        continue;
-                    }
-
-                    let j = rng.random_range(0..n_reads);
-                    if j < reservoir_threshold {
-                        reads[j] = HiFiRead::from_hts_rec(&record, &locus.region);
-                    }
-                    n_reads += 1;
-                }
-                Err(_) => result.map_err(|e| e.to_string())?,
-            }
-        }
-    }
-
-    if n_filt > 0 {
-        log::warn!(
-            "{}: Quality filtered {}/{} reads",
-            locus.id,
-            n_filt,
-            n_filt + n_reads
-        );
-    }
-
-    if n_reads > reads.len() {
-        log::debug!(
-            "{}: Randomly sampled {} out of {} reads",
-            locus.id,
-            reads.len(),
-            n_reads
-        );
-    } else {
-        log::debug!("{}: Collected {} reads", locus.id, reads.len());
-    }
-
-    Ok(reads)
-}
-
 fn get_tr_meth(read: &HiFiRead, span: &(usize, usize)) -> Option<f64> {
     if read.meth.is_none() || read.meth.as_ref().unwrap().is_empty() {
         return None;
@@ -401,7 +292,7 @@ fn filter_impure_trs(
     locus: &Locus,
     reads: &[HiFiRead],
     spans: &[(usize, usize)],
-    rq_cutoff: f64,
+    rq_cutoff: f32,
 ) -> (Vec<HiFiRead>, Vec<(usize, usize)>) {
     let max_filter = std::cmp::max(1_usize, (0.1 * (reads.len() as f64)).round() as usize);
     let mut num_filtered = 0;

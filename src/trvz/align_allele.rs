@@ -1,8 +1,8 @@
 use super::align::AlleleAlign;
 use super::align_consensus::align_consensus;
 use super::align_reads::align_reads;
-use super::locus::Locus;
-use super::read::Read;
+use crate::utils::locus::Locus;
+use crate::utils::read::Read;
 
 pub fn get_allele_align(locus: &Locus, consensus: &str, reads: &[&Read]) -> AlleleAlign {
     let consensus_align = align_consensus(locus, consensus);

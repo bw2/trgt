@@ -51,7 +51,7 @@ pub fn find_tr_spans(
 
     lf_spans
         .into_iter()
-        .zip(rf_spans.iter())
+        .zip(rf_spans)
         .map(|(lf_span, rf_span)| match (lf_span, rf_span) {
             (None, None) => None,      // No left or right span
             (Some(_lf), None) => None, // Left flanking only

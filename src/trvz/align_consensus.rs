@@ -1,7 +1,7 @@
 use super::align::{AlignOp, AlignSeg};
-use super::locus::Locus;
 use crate::hmm::{build_hmm, get_events, remove_imperfect_motifs, HmmEvent};
 use crate::trvz::align::SegType;
+use crate::utils::locus::Locus;
 use itertools::Itertools;
 
 /// Aligns a given allele to a perfect repeat as specified by the locus

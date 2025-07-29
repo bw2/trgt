@@ -49,7 +49,8 @@ impl HiFiRead {
             meth: clipped_meth,
             cigar: clipped_cigar,
             id: self.id.clone(),
-            mismatch_offsets: self.mismatch_offsets.clone(),
+            mismatch_positions: self.mismatch_positions.clone(),
+
             ..*self
         })
     }
@@ -131,12 +132,12 @@ mod tests {
             quals: "(".repeat(bases.len()).as_bytes().to_vec(),
             meth: Some(meths),
             read_qual: None,
-            mismatch_offsets: None,
-            start_offset: 0,
-            end_offset: 0,
+            mismatch_positions: None,
             cigar: Some(cigar),
             hp_tag: None,
             mapq: 60,
+            ref_start: 0,
+            ref_end: 0,
         }
     }
 

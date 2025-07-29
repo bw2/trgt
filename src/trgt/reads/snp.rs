@@ -1,156 +1,194 @@
 //! Defines functions to extract mismatch positions from CIGAR strings in HiFi reads.
 //!
 
-use super::{
-    cigar::{Cigar, CigarOp},
-    HiFiRead,
-};
-use crate::utils::GenomicRegion;
+use super::cigar::{Cigar, CigarOp};
 
-/// Collect all positions in a read that are mismatches relative to the starting point of the alignment (extract_snps_offset should be used instead)
+/// Collect all mismatch positions from a CIGAR alignment.
 ///
 /// # Arguments
-/// * `cigar` - The CIGAR string of the read alignment.
-/// * `region` - The `GenomicRegion` struct representing the region of interest.
+/// * `cigar` - The CIGAR object of the read alignment.
 ///
 /// # Returns
-/// Returns a `Vec<u32>` containing the positions of mismatches outside the region.
-#[allow(dead_code)]
-fn extract_snps(cigar: &Cigar, region: &GenomicRegion) -> Vec<u32> {
+/// Returns a `Vec<u32>` containing the absolute genomic positions of mismatches.
+pub fn extract_mismatch_positions(cigar: &Cigar) -> Vec<u32> {
     let mut mismatches = Vec::new();
-    let mut start_ref = cigar.ref_pos as u32;
-    for op in cigar.ops.iter() {
+    let mut current_ref_pos = cigar.ref_pos as u32;
+    for op in &cigar.ops {
         match op {
-            // Only mismatches not part of the region should be tracked
-            CigarOp::Diff(n) if !region.intersect_position(start_ref) => {
-                mismatches.extend(start_ref..start_ref + *n);
-                start_ref += *n;
+            CigarOp::Diff(len) => {
+                mismatches.extend(current_ref_pos..current_ref_pos + *len);
+                current_ref_pos += *len;
             }
-            // Operations that consume the reference (including mismatches within the region)
-            CigarOp::Match(n)
-            | CigarOp::Diff(n)
-            | CigarOp::Equal(n)
-            | CigarOp::Del(n)
-            | CigarOp::RefSkip(n) => {
-                start_ref += *n;
+            CigarOp::Match(len)
+            | CigarOp::Equal(len)
+            | CigarOp::Del(len)
+            | CigarOp::RefSkip(len) => {
+                current_ref_pos += *len;
             }
-            _ => {}
+            _ => {} // Consumes query only: Ins, SoftClip, HardClip, Pad
         }
     }
     mismatches
 }
 
-/// Collect all positions in a read that are mismatches relative to the starting and ending point of the region
-///
-/// # Arguments
-/// * `cigar` - The CIGAR string of the read alignment.
-/// * `region` - The `GenomicRegion` struct representing the region of interest.
-///
-/// # Returns
-/// Returns a `Vec<i32>` containing the positions of mismatches outside the region, relative to the region's start and end.
-pub fn extract_snps_offset(cigar: &Cigar, region: &GenomicRegion) -> Vec<i32> {
-    let mut mismatches: Vec<i32> = Vec::new();
-    let mut start_ref = cigar.ref_pos as u32;
-    for op in cigar.ops.iter() {
-        match op {
-            // Only mismatches not part of the region should be tracked
-            CigarOp::Diff(n) if !region.intersect_position(start_ref) => {
-                let diff = if start_ref < region.start {
-                    (start_ref as i32) - (region.start as i32)
-                } else {
-                    (start_ref as i32) - (region.end as i32)
-                };
-                mismatches.extend((0..*n).map(|i| diff + i as i32));
-                start_ref += *n;
+pub fn extract_mismatch_offsets(
+    mismatch_positions: &[u32],
+    region_start: u32,
+    region_end: u32,
+) -> Vec<i32> {
+    let region_start = region_start as i64;
+    let region_end = region_end as i64;
+    mismatch_positions
+        .iter()
+        .filter_map(|&pos| {
+            let pos = pos as i64;
+            // Check if the position is inside the region. If so, ignore it
+            if pos >= region_start && pos < region_end {
+                None
             }
-            // Operations that consume the reference (including mismatches within the region)
-            CigarOp::Match(n)
-            | CigarOp::Diff(n)
-            | CigarOp::Equal(n)
-            | CigarOp::Del(n)
-            | CigarOp::RefSkip(n) => {
-                start_ref += *n;
+            // Position is before the region; calculate the offset from the start
+            else if pos < region_start {
+                Some((pos - region_start) as i32)
             }
-            _ => {}
-        }
-    }
-    mismatches
-}
-
-/// Analyzes mismatches in a set of reads relative to a genomic region.
-///
-/// # Arguments
-/// * `reads` - A mutable slice of `HiFiRead` structs representing the reads to be analyzed.
-/// * `region` - The `GenomicRegion` struct representing the region of interest.
-///
-/// This function updates each `HiFiRead` in the slice with the offsets of mismatches relative to the region.
-#[allow(dead_code)]
-fn analyze_snps(reads: &mut [HiFiRead], region: &GenomicRegion) {
-    for read in reads.iter_mut().filter(|r| r.cigar.is_some()) {
-        let mismatches = extract_snps_offset(read.cigar.as_ref().unwrap(), region);
-        read.mismatch_offsets = Some(mismatches);
-    }
-}
-
-/// Converts a vector of `CigarOp` to a CIGAR string.
-///
-/// # Arguments
-/// * `cigar` - A slice of `CigarOp` representing the CIGAR operations.
-///
-/// # Returns
-/// Returns a `String` representing the CIGAR operations in standard CIGAR format.
-#[allow(dead_code)]
-fn get_cigar_string(cigar: &Vec<CigarOp>) -> String {
-    let mut result = String::new();
-    for op in cigar {
-        result.push_str(&op.len().to_string());
-        result.push(op.char());
-    }
-    result
-}
-
-/// Parses a CIGAR string into a vector of `CigarOp`.
-///
-/// # Arguments
-/// * `cigar_string` - A string slice representing the CIGAR operations in standard CIGAR format.
-///
-/// # Returns
-/// Returns a `Vec<CigarOp>` representing the parsed CIGAR operations.
-#[allow(dead_code)]
-fn parse_cigar_string(cigar_string: &str) -> Vec<CigarOp> {
-    let mut ops = Vec::new();
-    let mut num_str = String::new();
-    for c in cigar_string.chars() {
-        if c.is_ascii_digit() {
-            num_str.push(c);
-        } else {
-            let num = if num_str.is_empty() {
-                1
-            } else {
-                num_str.parse().unwrap()
-            };
-            num_str.clear();
-            let op = match c {
-                'M' => CigarOp::Match(num),
-                'I' => CigarOp::Ins(num),
-                'D' => CigarOp::Del(num),
-                'N' => CigarOp::RefSkip(num),
-                'S' => CigarOp::SoftClip(num),
-                'H' => CigarOp::HardClip(num),
-                'P' => CigarOp::Pad(num),
-                '=' => CigarOp::Equal(num),
-                'X' => CigarOp::Diff(num),
-                _ => panic!("Invalid cigar operation: {}", c),
-            };
-            ops.push(op);
-        }
-    }
-    ops
+            // Position is after the region; calculate the offset from the end
+            else {
+                Some((pos - region_end) as i32)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::GenomicRegion;
+
+    /// Collect all positions in a read that are mismatches relative to the starting point of the alignment (extract_snps_offset should be used instead)
+    ///
+    /// # Arguments
+    /// * `cigar` - The CIGAR string of the read alignment.
+    /// * `region` - The `GenomicRegion` struct representing the region of interest.
+    ///
+    /// # Returns
+    /// Returns a `Vec<u32>` containing the positions of mismatches outside the region.
+    #[allow(dead_code)]
+    fn extract_snps(cigar: &Cigar, region: &GenomicRegion) -> Vec<u32> {
+        let mut mismatches = Vec::new();
+        let mut start_ref = cigar.ref_pos as u32;
+        for op in cigar.ops.iter() {
+            match op {
+                // Only mismatches not part of the region should be tracked
+                CigarOp::Diff(n) if !region.intersect_position(start_ref) => {
+                    mismatches.extend(start_ref..start_ref + *n);
+                    start_ref += *n;
+                }
+                // Operations that consume the reference (including mismatches within the region)
+                CigarOp::Match(n)
+                | CigarOp::Diff(n)
+                | CigarOp::Equal(n)
+                | CigarOp::Del(n)
+                | CigarOp::RefSkip(n) => {
+                    start_ref += *n;
+                }
+                _ => {}
+            }
+        }
+        mismatches
+    }
+
+    /// Collect all positions in a read that are mismatches relative to the starting and ending point of the region
+    ///
+    /// # Arguments
+    /// * `cigar` - The CIGAR string of the read alignment.
+    /// * `region` - The `GenomicRegion` struct representing the region of interest.
+    ///
+    /// # Returns
+    /// Returns a `Vec<i32>` containing the positions of mismatches outside the region, relative to the region's start and end.
+    #[allow(dead_code)]
+    pub fn extract_snps_offset(cigar: &Cigar, region: &GenomicRegion) -> Vec<i32> {
+        let mut mismatches: Vec<i32> = Vec::new();
+        let mut start_ref = cigar.ref_pos as u32;
+        for op in cigar.ops.iter() {
+            match op {
+                // Only mismatches not part of the region should be tracked
+                CigarOp::Diff(n) if !region.intersect_position(start_ref) => {
+                    let diff = if start_ref < region.start {
+                        (start_ref as i32) - (region.start as i32)
+                    } else {
+                        (start_ref as i32) - (region.end as i32)
+                    };
+                    mismatches.extend((0..*n).map(|i| diff + i as i32));
+                    start_ref += *n;
+                }
+                // Operations that consume the reference (including mismatches within the region)
+                CigarOp::Match(n)
+                | CigarOp::Diff(n)
+                | CigarOp::Equal(n)
+                | CigarOp::Del(n)
+                | CigarOp::RefSkip(n) => {
+                    start_ref += *n;
+                }
+                _ => {}
+            }
+        }
+        mismatches
+    }
+
+    /// Converts a vector of `CigarOp` to a CIGAR string.
+    ///
+    /// # Arguments
+    /// * `cigar` - A slice of `CigarOp` representing the CIGAR operations.
+    ///
+    /// # Returns
+    /// Returns a `String` representing the CIGAR operations in standard CIGAR format.
+    #[allow(dead_code)]
+    fn get_cigar_string(cigar: &Vec<CigarOp>) -> String {
+        let mut result = String::new();
+        for op in cigar {
+            result.push_str(&op.len().to_string());
+            result.push(op.char());
+        }
+        result
+    }
+
+    /// Parses a CIGAR string into a vector of `CigarOp`.
+    ///
+    /// # Arguments
+    /// * `cigar_string` - A string slice representing the CIGAR operations in standard CIGAR format.
+    ///
+    /// # Returns
+    /// Returns a `Vec<CigarOp>` representing the parsed CIGAR operations.
+    #[allow(dead_code)]
+    fn parse_cigar_string(cigar_string: &str) -> Vec<CigarOp> {
+        let mut ops = Vec::new();
+        let mut num_str = String::new();
+        for c in cigar_string.chars() {
+            if c.is_ascii_digit() {
+                num_str.push(c);
+            } else {
+                let num = if num_str.is_empty() {
+                    1
+                } else {
+                    num_str.parse().unwrap()
+                };
+                num_str.clear();
+                let op = match c {
+                    'M' => CigarOp::Match(num),
+                    'I' => CigarOp::Ins(num),
+                    'D' => CigarOp::Del(num),
+                    'N' => CigarOp::RefSkip(num),
+                    'S' => CigarOp::SoftClip(num),
+                    'H' => CigarOp::HardClip(num),
+                    'P' => CigarOp::Pad(num),
+                    '=' => CigarOp::Equal(num),
+                    'X' => CigarOp::Diff(num),
+                    _ => panic!("Invalid cigar operation: {}", c),
+                };
+                ops.push(op);
+            }
+        }
+        ops
+    }
 
     // Corresponds to: m64015_190920_185703/70518060/ccs in the example data of TRGT
     const CIGAR_STRING: &str = "178=1D6=1D51=1I59=1I42=1I22=1X1=2D7=2X22=1D82=1X66=1D8=3D261=1D20=1D8=2D60=1I116=1I9=2I5=1I70=1D4=1D3=1D20=1I25=1I30=1X18=7I205=1I85=1D230=1I25=1I191=1I66=1I116=1D25=1I18=1I135=1I88=1I15=1I33=1I139=1D11=1I81=1I100=1I131=1I37=1I20=1X94=1I9=1D152=1I8=1D33=1D115=1I198=1I8=1I37=1I14=1I60=1X88=1D203=1D16=1I24=1I153=1D97=1I108=1I9=2I80=1D23=1I12=1I171=1X19=1D75=1I31=1X3=1I12=1I15=1X47=1I104=2I106=1I4=1I32=1D20=1I3=1X61=1I15=1X30=1D118=1D86=1X28=1I40=1X34=1I25=1I7=1I7=1I36=1D100=1I487=1I340=1I198=1I5=1I95=1I203=1I59=1I3=1D16=1I30=1I26=1I121=1X114=1I150=1I215=2I209=1I27=1I7=1D14=1I410=1I87=1I404=1I19=1I3=1I99=1D525=27D178=1I177=1I326=1X32=1I13=1I54=1D33=1I87=1X39=1D90=3285S";
@@ -534,5 +572,59 @@ mod tests {
         );
         assert_eq!(mismatches.len(), 2);
         assert_eq!(mismatches, [1, 7]);
+    }
+
+    #[test]
+    fn test_extract_mismatch_positions_simple() {
+        let cigar = Cigar {
+            ref_pos: 100,
+            ops: parse_cigar_string("5=2X3="),
+        };
+        let mismatches = extract_mismatch_positions(&cigar);
+        assert_eq!(mismatches, vec![105, 106]);
+    }
+
+    #[test]
+    fn test_extract_mismatch_positions_no_mismatches() {
+        let cigar = Cigar {
+            ref_pos: 100,
+            ops: parse_cigar_string("10=5I5D10="),
+        };
+        let mismatches = extract_mismatch_positions(&cigar);
+        assert!(mismatches.is_empty());
+    }
+
+    #[test]
+    fn test_extract_mismatch_positions_multiple_mismatches() {
+        let cigar = Cigar {
+            ref_pos: 100,
+            ops: parse_cigar_string("5=1X5=1X5="),
+        };
+        let mismatches = extract_mismatch_positions(&cigar);
+        assert_eq!(mismatches, vec![105, 111]);
+    }
+
+    #[test]
+    fn test_extract_mismatch_positions_with_del_and_skip() {
+        let cigar = Cigar {
+            ref_pos: 200,
+            ops: parse_cigar_string("10=2D3X2N4X"),
+        };
+        let mismatches = extract_mismatch_positions(&cigar);
+        assert_eq!(mismatches, vec![212, 213, 214, 217, 218, 219, 220]);
+    }
+
+    #[test]
+    fn test_extract_mismatch_positions_full_cigar() {
+        let cigar = Cigar {
+            ref_pos: 372,
+            ops: parse_cigar_string(CIGAR_STRING),
+        };
+        let mismatches = extract_mismatch_positions(&cigar);
+        let ground_truth = vec![
+            732, 743, 744, 850, 1567, 3340, 4072, 5061, 5188, 5219, 5537, 5614, 5851, 5920, 7715,
+            10709, 10930,
+        ];
+        assert_eq!(mismatches, ground_truth);
     }
 }

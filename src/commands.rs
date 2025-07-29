@@ -1,3 +1,4 @@
+pub mod deepdive;
 pub mod genotype;
 pub mod merge;
 pub mod plot;

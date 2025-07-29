@@ -1,4 +1,4 @@
-use super::read::Betas;
+use crate::utils::read::Betas;
 
 #[derive(Debug, Clone)]
 pub struct AlleleAlign {

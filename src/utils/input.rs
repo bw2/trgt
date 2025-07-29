@@ -1,7 +1,7 @@
 use super::read::{Beta, Betas, Read};
 use crate::{
     trgt::locus::create_chrom_lookup,
-    trvz::locus::Locus,
+    utils::locus::Locus,
     utils::{open_bam_reader, open_vcf_reader, Result},
 };
 use itertools::Itertools;
@@ -10,12 +10,7 @@ use rust_htslib::{
     bcf::{record::GenotypeAllele::UnphasedMissing, Read as BcfRead, Record},
     faidx,
 };
-use std::{
-    collections::HashSet,
-    io::{BufRead, BufReader, Read as ioRead},
-    path::Path,
-    str,
-};
+use std::{collections::HashSet, io::BufRead, path::Path, str};
 
 #[derive(Debug)]
 pub struct Span {
@@ -52,12 +47,15 @@ pub fn get_alleles(vcf_path: &Path, locus: &Locus) -> Result<Vec<String>> {
     Err(format!("TRID={} missing", &locus.id))
 }
 
-pub fn get_locus(
-    catalog_reader: BufReader<Box<dyn ioRead>>,
+pub fn get_locus<R>(
+    catalog_reader: R,
     genome_reader: faidx::Reader,
     tr_id: &str,
     flank_len: usize,
-) -> Result<Locus> {
+) -> Result<Locus>
+where
+    R: BufRead,
+{
     let chrom_lookup = create_chrom_lookup(&genome_reader)?;
     let query = format!("ID={};", tr_id);
 

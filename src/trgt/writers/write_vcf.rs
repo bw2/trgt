@@ -1,5 +1,4 @@
 //! Defines the `VcfWriter` struct and associated functions for creating and writing results to a VCF file.
-//!
 
 use crate::trgt::{
     locus::Locus,

@@ -1,10 +1,10 @@
 use super::align::SegType;
 use super::align_allele::get_allele_align;
 use super::params::{get_meth_colors, Color, ColorMap, PlotParams};
-use super::read::{Betas, Read};
 use super::scale::get_scale;
 use crate::trvz::align::{Align, AlignOp};
-use crate::trvz::locus::Locus;
+use crate::utils::locus::Locus;
+use crate::utils::read::{Betas, Read};
 use itertools::Itertools;
 use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape};
 

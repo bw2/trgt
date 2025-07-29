@@ -1,8 +1,8 @@
 //! Module for representing and building read information from alignment records.
 //!
 
-use super::{cigar::Cigar, snp};
-use crate::utils::GenomicRegion;
+use super::cigar::Cigar;
+use crate::trgt::reads::snp;
 use itertools::Itertools;
 use rust_htslib::bam::{self, ext::BamRecordExtensions, record::Aux};
 use std::str;
@@ -21,19 +21,17 @@ pub struct HiFiRead {
     /// Optional vector of methylation calls.
     pub meth: Option<Vec<u8>>,
     /// Optional overall quality score for the read.
-    pub read_qual: Option<f64>,
-    /// Optional vector of offsets where mismatches occur relative to a locus region.
-    pub mismatch_offsets: Option<Vec<i32>>,
-    /// Offset from the start of the reference region.
-    pub start_offset: i32,
-    /// Offset from the end of the reference region.
-    pub end_offset: i32,
+    pub read_qual: Option<f32>,
+    /// Optional vector of positions of mismatches
+    pub mismatch_positions: Option<Vec<u32>>,
     /// Optional CIGAR string representing the alignment.
     pub cigar: Option<Cigar>,
     /// Optional haplotype tag.
     pub hp_tag: Option<u8>,
     /// Mapping quality score.
     pub mapq: u8,
+    pub ref_start: i64,
+    pub ref_end: i64,
 }
 
 impl std::fmt::Debug for HiFiRead {
@@ -90,21 +88,20 @@ fn get_meth(rec: &bam::Record, bases: &[u8]) -> Option<Vec<u8>> {
 }
 
 impl HiFiRead {
-    /// Creates a `HiFiRead` from an HTSlib record and a genomic region.
+    /// Creates a `HiFiRead` from an HTSlib record.
     ///
     /// # Arguments
     /// * `rec` - A BAM record from HTSlib.
-    /// * `region` - The `GenomicRegion` struct representing the region of interest.
     ///
     /// # Returns
-    /// Returns a `HiFiRead` populated with data extracted from the BAM record and the specified region.
-    pub fn from_hts_rec(rec: &bam::Record, region: &GenomicRegion) -> HiFiRead {
+    /// Returns a `HiFiRead` populated with data extracted from the BAM record.
+    pub fn from_hts_rec(rec: &bam::Record) -> HiFiRead {
         let id = str::from_utf8(rec.qname()).unwrap().to_string();
         let is_reverse = rec.is_reverse();
-        let bases = rec.seq().as_bytes();
-        let quals = rec.qual().to_vec();
+        let bases = rec.seq().as_bytes(); // TODO: Make a reference
+        let quals = rec.qual().to_vec(); // TODO: Make a reference
 
-        let meth: Option<Vec<u8>> = get_meth(rec, &bases);
+        let meth = get_meth(rec, &bases);
 
         let mapq = rec.mapq();
         let hp_tag = get_hp_tag(rec);
@@ -119,10 +116,10 @@ impl HiFiRead {
             None
         };
 
-        let start_offset = (rec.reference_start() - region.start as i64) as i32;
-        let end_offset = (rec.reference_end() - region.end as i64) as i32;
+        let ref_start = rec.reference_start();
+        let ref_end = rec.reference_end();
 
-        let mismatch_offsets = cigar.as_ref().map(|c| snp::extract_snps_offset(c, region));
+        let mismatch_positions = cigar.as_ref().map(snp::extract_mismatch_positions);
 
         HiFiRead {
             id,
@@ -131,12 +128,12 @@ impl HiFiRead {
             quals,
             meth,
             read_qual,
-            mismatch_offsets,
-            start_offset,
-            end_offset,
+            mismatch_positions,
             cigar,
             hp_tag,
             mapq,
+            ref_start,
+            ref_end,
         }
     }
 }
@@ -147,10 +144,10 @@ impl HiFiRead {
 /// * `rec` - A reference to the BAM record.
 ///
 /// # Returns
-/// Returns an `Option<f64>` which is `Some` if the RQ tag is present and can be parsed as a float, otherwise `None`.
-pub fn get_rq_tag(rec: &bam::Record) -> Option<f64> {
+/// Returns an `Option<f32>` which is `Some` if the RQ tag is present and can be parsed as a float, otherwise `None`.
+pub fn get_rq_tag(rec: &bam::Record) -> Option<f32> {
     match rec.aux(b"rq") {
-        Ok(Aux::Float(value)) => Some(f64::from(value)),
+        Ok(Aux::Float(value)) => Some(value),
         _ => None,
     }
 }

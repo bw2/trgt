@@ -1,16 +1,18 @@
+use super::align::Align;
 use super::params::get_meth_colors;
 use super::params::Color;
 use super::params::ColorMap;
 use super::params::PlotParams;
-use super::read::project_betas;
-use super::read::Betas;
 use super::scale::get_scale;
-use super::{align::Align, locus::Locus, read::Read};
 use crate::trvz::align::AlignOp;
 use crate::trvz::align::AlignSeg;
 use crate::trvz::align::SegType;
 use crate::trvz::align_consensus::align_motifs;
-use crate::trvz::read::Beta;
+use crate::utils::locus::Locus;
+use crate::utils::read::project_betas;
+use crate::utils::read::Beta;
+use crate::utils::read::Betas;
+use crate::utils::read::Read;
 use crate::wfaligner::AlignmentScope;
 use crate::wfaligner::MemoryModel;
 use crate::wfaligner::WFAligner;
@@ -43,8 +45,8 @@ fn align(locus: &Locus, longest_read: usize, read: &Read) -> (Align, Vec<Beta>) 
     let lf_ref = locus.left_flank.as_bytes();
     let rf_ref = locus.right_flank.as_bytes();
 
-    let lf_read = read.seq[..lf_ref.len()].as_bytes();
-    let rf_read = read.seq[read.seq.len() - locus.right_flank.len()..].as_bytes();
+    let lf_read = &read.seq.as_bytes()[..lf_ref.len()];
+    let rf_read = &read.seq.as_bytes()[read.seq.len() - locus.right_flank.len()..];
 
     let lf_wfa_align = get_flank_align(lf_ref, lf_read);
     let mut align = convert(&lf_wfa_align, SegType::LeftFlank);

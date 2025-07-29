@@ -2,7 +2,7 @@ use clap::Parser;
 use std::time;
 use trgt::{
     cli::{init_verbose, Cli, Command, FULL_VERSION},
-    commands::{genotype, merge, plot, validate},
+    commands::{deepdive, genotype, merge, plot, validate},
     utils::{handle_error_and_exit, Result},
 };
 
@@ -34,7 +34,12 @@ fn runner() -> Result<()> {
             log::trace!("Merge arguments: {:#?}", args);
             merge::merge(args)?
         }
+        Command::Deepdive(args) => {
+            log::trace!("Deep dive arguments: {:#?}", args);
+            deepdive::deepdive(args)?
+        }
     }
+
     log::info!("Total execution time: {:.2?}", start_timer.elapsed());
     log::info!("{} end", env!("CARGO_PKG_NAME"));
     Ok(())

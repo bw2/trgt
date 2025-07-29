@@ -1,5 +1,5 @@
 use super::align::{Align, AlignOp, AlignSeg};
-use super::read::{project_betas, Betas, Read};
+use crate::utils::read::{project_betas, Betas, Read};
 use crate::wfaligner::{AlignmentScope, MemoryModel, WFAligner, WfaAlign, WfaOp};
 use itertools::Itertools;
 

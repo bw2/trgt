@@ -1,12 +1,15 @@
 mod align;
 mod bam_utils;
 mod genotyper;
+pub mod input;
 mod io_utils;
 mod karyotype;
+pub mod locus;
 mod math;
 mod ploidy;
 mod presets;
-mod readers;
+pub mod read;
+pub mod readers;
 mod region;
 pub mod util;
 

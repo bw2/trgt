@@ -98,7 +98,7 @@ impl Generator {
                 Shape::Tick(label) => self.add_tick((x_cur, y), dims, &seg.color, *label, font),
                 Shape::None | Shape::VLine => {}
                 Shape::DoubleArrow(label) => {
-                    self.add_double_arrow((x_cur, y), dims, &seg.color, stroke, label)
+                    self.add_double_arrow((x_cur, y), dims, &seg.color, stroke, label, font)
                 }
             }
 
@@ -197,6 +197,7 @@ impl Generator {
         color: &Color,
         stroke: f64,
         label: &Option<String>,
+        font: &FontConfig,
     ) {
         let x1 = pos.0;
         let x2 = pos.0 + dims.0;
@@ -225,9 +226,11 @@ impl Generator {
 
         if let Some(label) = label {
             let point = format!("x=\"{}\" y=\"{}\"", (x1 + x2) / 2.0, pos.1);
-            let height = r#"font-size="14px""#;
-            let style = r#"font-family="monospace" font-weight="bold" text-anchor="middle""#;
-            let line = format!("<text {} {} {} >{}</text>", point, style, height, label);
+            let font_style = format!(
+                r#"font-family="{}" font-weight="{}" font-size="{}" text-anchor="middle""#,
+                font.family, font.weight, font.size
+            );
+            let line = format!("<text {} {} >{}</text>", point, font_style, label);
             self.add_line(&line);
         }
     }

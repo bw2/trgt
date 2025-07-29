@@ -1,12 +1,13 @@
 //! Defines the `BamWriter` struct and associated functions for creating and writing spanning reads to a BAM file.
 //!
 use crate::cli;
+use crate::trgt::reads::extract_mismatch_offsets;
 use crate::trgt::{locus::Locus, workflows::LocusResult};
 use crate::utils::Result;
 use rust_htslib::bam::{
     self,
     header::HeaderRecord,
-    record::{Aux, AuxArray, CigarString},
+    record::{Aux, CigarString},
 };
 use std::env;
 
@@ -32,10 +33,12 @@ impl BamWriter {
         output_bam_path: &str,
         template_header: bam::Header,
         flank_len: usize,
+        n_compression_threads: usize,
     ) -> Result<BamWriter> {
         let header = Self::create_header(template_header);
-        let writer = bam::Writer::from_path(output_bam_path, &header, bam::Format::Bam)
+        let mut writer = bam::Writer::from_path(output_bam_path, &header, bam::Format::Bam)
             .map_err(|e| e.to_string())?;
+        writer.set_threads(n_compression_threads).unwrap();
         Ok(BamWriter { writer, flank_len })
     }
 
@@ -94,6 +97,7 @@ impl BamWriter {
             let contig_id = self.writer.header().tid(contig).unwrap();
 
             let mut rec = bam::Record::new();
+
             rec.set_tid(contig_id as i32);
             if read.is_reverse {
                 rec.set_reverse();
@@ -101,43 +105,51 @@ impl BamWriter {
 
             if let Some(cigar) = read.cigar {
                 rec.set_pos(cigar.ref_pos);
-                let cigar = CigarString(cigar.ops);
-                rec.set(read.id.as_bytes(), Some(&cigar), &read.bases, &read.quals);
+                rec.set(
+                    read.id.as_bytes(),
+                    Some(&CigarString(cigar.ops)),
+                    &read.bases,
+                    &read.quals,
+                );
                 rec.set_mapq(read.mapq);
             } else {
-                rec.set(read.id.as_bytes(), None, &read.bases, &read.quals);
                 rec.set_pos(locus.region.start as i64);
+                rec.set(read.id.as_bytes(), None, &read.bases, &read.quals);
                 rec.set_unmapped();
             }
 
-            let tr_tag = Aux::String(&locus.id);
-            rec.push_aux(b"TR", tr_tag).unwrap();
-
-            rec.push_aux(b"rq", Aux::Float(read.read_qual.unwrap_or(-1.0) as f32))
+            rec.push_aux(b"TR", Aux::String(&locus.id)).unwrap();
+            rec.push_aux(b"rq", Aux::Float(read.read_qual.unwrap_or(-1.0f32)))
                 .unwrap();
 
             if let Some(meth) = &read.meth {
-                let mc_tag = Aux::ArrayU8(meth.into());
-                rec.push_aux(b"MC", mc_tag).unwrap();
+                rec.push_aux(b"MC", Aux::ArrayU8(meth.into())).unwrap();
             }
 
-            if let Some(mismatch) = &read.mismatch_offsets {
-                let mm_tag = Aux::ArrayI32(mismatch.into());
-                rec.push_aux(b"MO", mm_tag).unwrap();
+            let start_offset = (read.ref_start - locus.region.start as i64) as i32;
+            let end_offset = (read.ref_end - locus.region.end as i64) as i32;
+            let mismatch_offsets = read.mismatch_positions.as_ref().map(|positions| {
+                extract_mismatch_offsets(positions, locus.region.start, locus.region.end)
+            });
+
+            if let Some(mismatches) = mismatch_offsets {
+                rec.push_aux(b"MO", Aux::ArrayI32((&mismatches).into()))
+                    .unwrap();
             }
 
             if let Some(hp) = read.hp_tag {
-                let hp_tag = Aux::U8(hp);
-                rec.push_aux(b"HP", hp_tag).unwrap();
+                rec.push_aux(b"HP", Aux::U8(hp)).unwrap();
             }
 
-            rec.push_aux(b"SO", Aux::I32(read.start_offset)).unwrap();
-            rec.push_aux(b"EO", Aux::I32(read.end_offset)).unwrap();
+            rec.push_aux(b"SO", Aux::I32(start_offset)).unwrap();
+            rec.push_aux(b"EO", Aux::I32(end_offset)).unwrap();
             rec.push_aux(b"AL", Aux::I32(classification)).unwrap();
 
-            let dat: &Vec<u32> = &vec![self.flank_len as u32, self.flank_len as u32];
-            let fl_tag: AuxArray<u32> = dat.into();
-            rec.push_aux(b"FL", Aux::ArrayU32(fl_tag)).unwrap();
+            rec.push_aux(
+                b"FL",
+                Aux::ArrayU32((&[self.flank_len as u32, self.flank_len as u32]).into()),
+            )
+            .unwrap();
 
             self.writer.write(&rec).unwrap();
         }

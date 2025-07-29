@@ -1,9 +1,42 @@
 use crate::cli::ValidateArgs;
-use crate::trgt::locus::get_loci;
+use crate::trgt::locus::{create_chrom_lookup, Locus};
 use crate::utils::{
     format_number_with_commas, open_catalog_reader, open_genome_reader, Genotyper, Karyotype,
     Result,
 };
+use rust_htslib::faidx;
+use std::io::BufRead;
+
+pub fn get_loci<R>(
+    catalog_reader: R,
+    genome_reader: faidx::Reader,
+    karyotype: Karyotype,
+    flank_len: usize,
+    genotyper: Genotyper,
+) -> impl Iterator<Item = Result<Locus>>
+where
+    R: BufRead,
+{
+    let chrom_lookup = create_chrom_lookup(&genome_reader).unwrap();
+    catalog_reader
+        .lines()
+        .enumerate()
+        .map(move |(line_number, result_line)| {
+            result_line
+                .map_err(|e| format!("Error at BED line {}: {}", line_number + 1, e))
+                .and_then(|line| {
+                    Locus::new(
+                        &genome_reader,
+                        &chrom_lookup,
+                        &line,
+                        flank_len,
+                        &karyotype,
+                        genotyper,
+                    )
+                    .map_err(|e| format!("Error at BED line {}: {}", line_number + 1, e))
+                })
+        })
+}
 
 pub fn validate(args: ValidateArgs) -> Result<()> {
     let catalog_reader = open_catalog_reader(&args.repeats_path)?;

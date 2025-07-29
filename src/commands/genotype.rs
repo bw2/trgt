@@ -1,14 +1,16 @@
 use crate::cli::GenotypeArgs;
 use crate::trgt::{
-    locus::{stream_loci_into_channel, Locus},
+    locus::{stream_locus_groups_into_channel, Locus},
+    locus_group::{extract_reads_for_group, LocusGroup},
     workflows::{self, analyze_tr, LocusResult, Params},
     writers::{BamWriter, VcfWriter},
 };
 use crate::utils::{
-    create_writer, get_bam_header, get_sample_name, is_bam_mapped, Karyotype, Result, TrgtScoring,
+    create_writer, get_bam_header, get_sample_name, is_bam_mapped, readers::create_bam_reader,
+    Karyotype, Result, TrgtScoring,
 };
 use crate::wfaligner::{AlignmentScope, Heuristic, MemoryModel, WFAligner};
-use crossbeam_channel::{bounded, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use rayon::{
     iter::{ParallelBridge, ParallelIterator},
     ThreadPoolBuilder,
@@ -16,61 +18,28 @@ use rayon::{
 use rust_htslib::bam;
 use std::{
     cell::RefCell,
-    path::PathBuf,
+    path::Path,
     sync::Arc,
-    thread::{self},
+    thread::{self, JoinHandle},
 };
 
 #[derive(Debug, Clone)]
 struct ThreadContextParams {
     flank_scoring: TrgtScoring,
-    reads_path: PathBuf,
-    genome_path: PathBuf,
 }
 
 thread_local! {
-    static CTX_PARAMS: RefCell<Option<ThreadContextParams>> = const { RefCell::new(None) };
-}
-
-fn create_thread_local_bam_reader() -> bam::IndexedReader {
-    CTX_PARAMS.with(|ctx_cell| {
-        let ctx = ctx_cell
-            .borrow()
-            .as_ref()
-            .expect("Thread context parameters not initialized for BAM reader")
-            .clone();
-
-        let reads_path = ctx.reads_path;
-        let genome_path = ctx.genome_path;
-
-        let mut reader = bam::IndexedReader::from_path(&reads_path).unwrap_or_else(|e| {
-            panic!(
-                "Failed to initialize BAM/CRAM reader for path {}: {}",
-                reads_path.display(),
-                e
-            )
-        });
-
-        if let Err(e) = reader.set_reference(&genome_path) {
-            panic!(
-                "Failed to set reference '{}' for CRAM reader on '{}': {}",
-                genome_path.display(),
-                reads_path.display(),
-                e
-            );
-        }
-        reader
-    })
+    static THREAD_CONTEXT: RefCell<Option<ThreadContextParams>> = const { RefCell::new(None) };
 }
 
 fn create_thread_local_ga_aligner_with_scoring() -> WFAligner {
-    CTX_PARAMS.with(|ctx_cell| {
-        let ctx = ctx_cell
+    THREAD_CONTEXT.with(|context_cell| {
+        let context = context_cell
             .borrow()
             .as_ref()
             .expect("Thread context parameters not initialized for WFA gap affine aligner")
             .clone();
-        let scoring = &ctx.flank_scoring;
+        let scoring = &context.flank_scoring;
 
         WFAligner::builder(AlignmentScope::Alignment, MemoryModel::MemoryHigh)
             .affine(scoring.mism_scr, scoring.gapo_scr, scoring.gape_scr)
@@ -92,8 +61,6 @@ fn create_thread_local_ed() -> WFAligner {
 }
 
 thread_local! {
-    // BAM Reader
-    static THREAD_BAM_READER: RefCell<bam::IndexedReader> = RefCell::new(create_thread_local_bam_reader());
     // Flank locater aligner
     pub static THREAD_WFA_FLANK: RefCell<WFAligner> = RefCell::new(create_thread_local_ga_aligner_with_scoring());
     // Consensus aligner
@@ -102,13 +69,9 @@ thread_local! {
     pub static THREAD_WFA_ED: RefCell<WFAligner> = RefCell::new(create_thread_local_ed());
 }
 
-const CHANNEL_BUFFER_SIZE: usize = 2048;
-
-pub fn trgt(args: GenotypeArgs) -> crate::utils::Result<()> {
+pub fn trgt(args: GenotypeArgs) -> Result<()> {
     let thread_context = ThreadContextParams {
         flank_scoring: args.aln_scoring,
-        reads_path: args.reads_path.clone(),
-        genome_path: args.genome_path.clone(),
     };
 
     let karyotype = Karyotype::new(&args.karyotype)?;
@@ -128,40 +91,20 @@ pub fn trgt(args: GenotypeArgs) -> crate::utils::Result<()> {
 
     let output_flank_len = std::cmp::min(args.flank_len, args.output_flank_len);
     let bam_writer = if !args.disable_bam_output {
+        let n_writer_threads = args.bam_compression_threads.unwrap_or({
+            match args.num_threads {
+                n if n < 12 => 1,
+                _ => 2,
+            }
+        });
         Some(create_writer(
             &args.output_prefix,
             "spanning.bam",
-            |path| BamWriter::new(path, bam_header, output_flank_len),
+            |path| BamWriter::new(path, bam_header, output_flank_len, n_writer_threads),
         )?)
     } else {
         None
     };
-
-    let (sender_locus, receiver_locus) = bounded(CHANNEL_BUFFER_SIZE);
-    let locus_stream_thread = thread::spawn(move || {
-        stream_loci_into_channel(
-            &args.repeats_path,
-            &args.genome_path,
-            args.flank_len,
-            args.genotyper,
-            &karyotype,
-            sender_locus,
-        )
-    });
-
-    let (sender_result, receiver_result) = bounded(CHANNEL_BUFFER_SIZE);
-    let writer_thread = thread::spawn(move || {
-        if let Some(mut bam_writer) = bam_writer {
-            for (locus, results) in &receiver_result {
-                vcf_writer.write(&locus, &results);
-                bam_writer.write(&locus, &results);
-            }
-        } else {
-            for (locus, results) in &receiver_result {
-                vcf_writer.write(&locus, &results);
-            }
-        }
-    });
 
     let workflow_params = Arc::new(workflows::Params {
         search_flank_len: args.flank_len,
@@ -170,35 +113,178 @@ pub fn trgt(args: GenotypeArgs) -> crate::utils::Result<()> {
         min_flank_id_frac: args.min_flank_id_frac,
     });
 
-    log::debug!(
-        "Initializing thread pool with {} threads...",
-        args.num_threads
+    let num_fetcher_threads = args
+        .fetcher_threads
+        .unwrap_or_else(|| (args.num_threads / 2).clamp(1, 8));
+
+    let group_channel_buffer_size = args
+        .group_channel_buffer_size
+        .unwrap_or(num_fetcher_threads);
+
+    // Stage 1 -> 2: Locus group
+    let (group_sender, group_receiver) = bounded(group_channel_buffer_size);
+    // Stage 2 -> 3: Loci with reads
+    let (populated_locus_sender, populated_locus_receiver) =
+        bounded(args.locus_channel_buffer_size);
+    // Stage 3 -> 4: Final results for writer
+    let (analysis_result_sender, analysis_result_receiver) =
+        bounded(args.result_channel_buffer_size);
+
+    // Stage 1: Grouping loci into LocusGroup's (IO: Read repeat catalog and reference genome)
+    let locus_grouper_thread = {
+        let genome_path = args.genome_path.clone();
+        thread::spawn(move || {
+            stream_locus_groups_into_channel(
+                &args.repeats_path,
+                &genome_path,
+                args.flank_len,
+                args.genotyper,
+                &karyotype,
+                group_sender,
+                args.max_group_span,
+                args.max_group_size,
+            )
+        })
+    };
+
+    // Stage 2: Populate LocusGroup with reads (IO: Read BAM file)
+    let fetcher_threads = spawn_fetcher_threads(
+        &args.reads_path,
+        &args.genome_path,
+        num_fetcher_threads,
+        args.decompression_threads,
+        &workflow_params,
+        group_receiver,
+        populated_locus_sender,
     );
 
-    let pool = initialize_thread_pool(args.num_threads, thread_context)?;
-    pool.install(|| {
-        receiver_locus
-            .into_iter()
-            .par_bridge()
-            .for_each_with(&sender_result, |s, locus_result| match locus_result {
-                Ok(locus) => process_locus(locus, &workflow_params, s),
-                Err(err) => log::error!("Locus processing: {:#}", err),
-            });
+    // Stage 4: Spawn the writer thread to write BAM/VCF output (IO: Write BAM and VCF)
+    let writer_thread = thread::spawn(move || {
+        if let Some(mut bam_writer) = bam_writer {
+            for (locus, results) in &analysis_result_receiver {
+                vcf_writer.write(&locus, &results);
+                bam_writer.write(&locus, &results);
+            }
+        } else {
+            for (locus, results) in &analysis_result_receiver {
+                vcf_writer.write(&locus, &results);
+            }
+        }
     });
 
-    // Clean-up
-    drop(sender_result);
-    writer_thread.join().expect("Writer thread panicked");
-    log::trace!("Writer thread finished");
-    match locus_stream_thread
-        .join()
-        .expect("Locus stream thread panicked")
-    {
-        Ok(_) => log::trace!("Locus stream thread finished"),
-        Err(e) => log::error!("Locus streaming failed: {}", e),
+    // Stage 3: Worker pool for genotyping TRs
+    let pool = initialize_thread_pool(args.num_threads, thread_context)?;
+    pool.install(|| {
+        populated_locus_receiver
+            .into_iter()
+            .par_bridge()
+            .for_each_with(
+                analysis_result_sender,
+                |s, locus_result| match locus_result {
+                    Ok(locus) => process_locus(locus, &workflow_params, s),
+                    Err(err) => log::error!("Locus processing: {:#}", err),
+                },
+            );
+    });
+
+    log::debug!("Analysis complete. Shutting down pipeline threads...");
+
+    match writer_thread.join() {
+        Ok(_) => log::trace!("Writer thread has finished."),
+        Err(_) => log::error!("Writer thread panicked."),
     }
 
+    match locus_grouper_thread.join() {
+        Ok(Ok(_)) => log::trace!("Locus grouper thread has finished."),
+        Ok(Err(e)) => log::error!("Locus grouping stage failed: {}", e),
+        Err(_) => log::error!("Locus grouper thread panicked."),
+    }
+
+    for handle in fetcher_threads {
+        match handle.join() {
+            Ok(_) => {}
+            Err(_) => log::error!("Fetcher thread panicked."),
+        }
+    }
+    log::trace!("All fetcher threads have finished.");
+    log::debug!("All pipeline threads shut down successfully.");
+
     Ok(())
+}
+
+fn run_fetcher_thread(
+    mut bam_reader: bam::IndexedReader,
+    group_receiver: Receiver<Result<LocusGroup>>,
+    populated_locus_sender: Sender<Result<Locus>>,
+    workflow_params: Arc<Params>,
+) {
+    for group_result in group_receiver {
+        let group = match group_result {
+            Ok(group) => group,
+            Err(e) => {
+                let _ = populated_locus_sender.send(Err(e));
+                continue;
+            }
+        };
+
+        match extract_reads_for_group(&mut bam_reader, group, &workflow_params) {
+            Ok(populated_loci) => {
+                for locus in populated_loci {
+                    if populated_locus_sender.send(Ok(locus)).is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = populated_locus_sender.send(Err(e));
+            }
+        }
+    }
+}
+
+fn spawn_fetcher_threads(
+    reads_path: &Path,
+    genome_path: &Path,
+    num_fetcher_threads: usize,
+    decompression_threads: usize,
+    workflow_params: &Arc<Params>,
+    group_receiver: Receiver<Result<LocusGroup>>,
+    populated_locus_sender: Sender<Result<Locus>>,
+) -> Vec<JoinHandle<()>> {
+    let mut threads = Vec::with_capacity(num_fetcher_threads);
+    log::debug!(
+        "Initializing read fetcher pool with {} threads...",
+        num_fetcher_threads
+    );
+    for i in 0..num_fetcher_threads {
+        let reads_path = reads_path.to_path_buf();
+        let genome_path = genome_path.to_path_buf();
+        let group_receiver = group_receiver.clone();
+        let populated_locus_sender = populated_locus_sender.clone();
+        let workflow_params = workflow_params.clone();
+
+        let handle = thread::Builder::new()
+            .name(format!("fetcher-{}", i))
+            .spawn(move || {
+                let bam_reader =
+                    match create_bam_reader(&reads_path, &genome_path, decompression_threads) {
+                        Ok(reader) => reader,
+                        Err(e) => {
+                            log::error!("Fetcher thread failed to initialize: {}", e);
+                            return;
+                        }
+                    };
+                run_fetcher_thread(
+                    bam_reader,
+                    group_receiver,
+                    populated_locus_sender,
+                    workflow_params,
+                );
+            })
+            .unwrap();
+        threads.push(handle);
+    }
+    threads
 }
 
 fn process_locus(
@@ -206,36 +292,38 @@ fn process_locus(
     workflow_params: &Arc<Params>,
     sender_result: &Sender<(Locus, LocusResult)>,
 ) {
-    THREAD_BAM_READER.with(|reader_cell| {
-        let mut reader = reader_cell.borrow_mut();
-        match analyze_tr(&locus, workflow_params, &mut reader) {
-            Ok(results) => {
-                if let Err(e) = sender_result.send((locus, results)) {
-                    log::error!("Failed to send locus result to writer thread: {}", e);
-                }
-            }
-            Err(err) => {
-                log::error!("Error analyzing locus {}: {}", locus.id, err);
+    let (locus, result) = analyze_tr(locus, workflow_params);
+    match result {
+        Ok(results) => {
+            if let Err(e) = sender_result.send((locus, results)) {
+                log::error!("Failed to send locus result to writer thread: {}", e);
             }
         }
-    });
+        Err(err) => {
+            log::error!("Error analyzing locus {}: {}", locus.id, err);
+        }
+    }
 }
 
 fn initialize_thread_pool(
     num_threads: usize,
     thread_context: ThreadContextParams,
 ) -> Result<rayon::ThreadPool> {
+    log::debug!(
+        "Initializing analysis thread pool with {} threads...",
+        num_threads
+    );
     ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .thread_name(|i| format!("trgt-{}", i))
         .start_handler(move |_thread_index| {
-            CTX_PARAMS.with(|cell| {
+            THREAD_CONTEXT.with(|cell| {
                 *cell.borrow_mut() = Some(thread_context.clone());
             });
             log::trace!("Initialized thread {:?}", std::thread::current().id());
         })
         .exit_handler(|_thread_index| {
-            CTX_PARAMS.with(|cell| {
+            THREAD_CONTEXT.with(|cell| {
                 *cell.borrow_mut() = None;
             });
         })

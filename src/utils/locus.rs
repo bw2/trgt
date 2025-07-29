@@ -1,10 +1,17 @@
 use crate::{
     trgt::locus::{check_region_bounds, decode_fields, get_field, get_tr_and_flanks},
-    trvz::struc::RegionLabel,
     utils::{GenomicRegion, Result},
 };
 use rust_htslib::faidx;
 use std::collections::HashMap;
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum RegionLabel {
+    Flank(usize, usize),      // Coordinates
+    Tr(usize, usize, String), // Coordinates, Motif
+    Seq(usize, usize),
+    Other(usize, usize),
+}
 
 #[derive(Debug)]
 pub struct Allele {

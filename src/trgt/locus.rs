@@ -1,13 +1,10 @@
+use crate::trgt::{locus_group::LocusGroup, reads::HiFiRead};
 use crate::utils::{
     open_catalog_reader, open_genome_reader, GenomicRegion, Genotyper, Karyotype, Ploidy, Result,
 };
 use crossbeam_channel::Sender;
 use rust_htslib::faidx;
-use std::{
-    collections::HashMap,
-    io::{BufRead, BufReader, Read as ioRead},
-    path::Path,
-};
+use std::{collections::HashMap, io::BufRead, path::Path};
 
 #[derive(Debug)]
 pub struct Locus {
@@ -20,6 +17,7 @@ pub struct Locus {
     pub struc: String,
     pub ploidy: Ploidy,
     pub genotyper: Genotyper,
+    pub reads: Vec<HiFiRead>,
 }
 
 impl Locus {
@@ -42,12 +40,13 @@ impl Locus {
             ));
         }
 
-        let (chrom, start, end, info_fields) = match &split_line[..] {
+        let (chrom, _start, _end, info_fields) = match &split_line[..] {
             [chrom, start, end, info_fields] => (*chrom, *start, *end, *info_fields),
             _ => unreachable!(),
         };
 
-        let region = GenomicRegion::from_string(&format!("{}:{}-{}", chrom, start, end))?;
+        let region = GenomicRegion::from_bed_fields(&split_line[..3])?;
+
         check_region_bounds(&region, flank_len, chrom_lookup)?;
 
         let ploidy = karyotype.get_ploidy(chrom)?;
@@ -68,9 +67,10 @@ impl Locus {
             right_flank,
             region,
             motifs,
-            struc,
             ploidy,
+            struc,
             genotyper,
+            reads: Vec::new(),
         })
     }
 }
@@ -92,27 +92,38 @@ pub fn create_chrom_lookup(reader: &faidx::Reader) -> Result<HashMap<String, u32
     Ok(map)
 }
 
-pub fn stream_loci_into_channel(
+#[allow(clippy::too_many_arguments)]
+pub fn stream_locus_groups_into_channel(
     repeats_path: &Path,
     genome_path: &Path,
     flank_len: usize,
     genotyper: Genotyper,
     karyotype: &Karyotype,
-    sender: Sender<Result<Locus>>,
+    sender: Sender<Result<LocusGroup>>,
+    max_group_span: u32,
+    max_group_size: usize,
 ) -> Result<()> {
-    let catalog_reader = open_catalog_reader(repeats_path)?;
-    let genome_reader = open_genome_reader(genome_path)?;
-    let chrom_lookup = create_chrom_lookup(&genome_reader)?;
+    let mut catalog_reader = open_catalog_reader(repeats_path).map_err(|e| e.to_string())?;
+    let genome_reader = open_genome_reader(genome_path).map_err(|e| e.to_string())?;
+    let chrom_lookup = create_chrom_lookup(&genome_reader).map_err(|e| e.to_string())?;
 
-    for (line_number, result_line) in catalog_reader.lines().enumerate() {
-        let line = match result_line {
-            Ok(line) => line,
-            Err(err) => {
-                let error = format!("Error at BED line {}: {}", line_number + 1, err);
+    let mut current_group: Option<LocusGroup> = None;
+    let mut line = String::new();
+    let mut line_number = 0;
+
+    while {
+        line.clear();
+        match catalog_reader.read_line(&mut line) {
+            Ok(0) => false, // EOF
+            Ok(_) => true,
+            Err(e) => {
+                let error = format!("Error reading BED line {}: {}", line_number + 1, e);
                 sender.send(Err(error)).map_err(|e| e.to_string())?;
-                break;
+                false
             }
-        };
+        }
+    } {
+        line_number += 1;
 
         let locus_result = Locus::new(
             &genome_reader,
@@ -122,47 +133,33 @@ pub fn stream_loci_into_channel(
             karyotype,
             genotyper,
         );
+
         let locus = match locus_result {
-            Ok(locus) => Ok(locus),
+            Ok(locus) => locus,
             Err(e) => {
-                let error = format!("Error at BED line {}: {}", line_number + 1, e);
+                let error = format!("Error at BED line {}: {}", line_number, e);
                 sender.send(Err(error)).map_err(|e| e.to_string())?;
                 continue;
             }
         };
 
-        sender.send(locus).map_err(|e| e.to_string())?;
+        if let Some(group) = &mut current_group {
+            if group.loci.len() < max_group_size && group.can_add_locus(&locus, max_group_span) {
+                group.add_locus_unchecked(locus);
+                continue;
+            }
+            sender
+                .send(Ok(current_group.take().unwrap()))
+                .map_err(|e| e.to_string())?;
+        }
+        current_group = Some(LocusGroup::new(locus));
     }
+
+    if let Some(group) = current_group.take() {
+        sender.send(Ok(group)).map_err(|e| e.to_string())?;
+    }
+
     Ok(())
-}
-
-pub fn get_loci(
-    catalog_reader: BufReader<Box<dyn ioRead>>,
-    genome_reader: faidx::Reader,
-    karyotype: Karyotype,
-    flank_len: usize,
-    genotyper: Genotyper,
-) -> impl Iterator<Item = Result<Locus>> {
-    let chrom_lookup = create_chrom_lookup(&genome_reader).unwrap();
-
-    catalog_reader
-        .lines()
-        .enumerate()
-        .map(move |(line_number, result_line)| {
-            result_line
-                .map_err(|e| format!("Error at BED line {}: {}", line_number + 1, e))
-                .and_then(|line| {
-                    Locus::new(
-                        &genome_reader,
-                        &chrom_lookup,
-                        &line,
-                        flank_len,
-                        &karyotype,
-                        genotyper,
-                    )
-                    .map_err(|e| format!("Error at BED line {}: {}", line_number + 1, e))
-                })
-        })
 }
 
 pub fn get_tr_and_flanks(
@@ -170,37 +167,42 @@ pub fn get_tr_and_flanks(
     region: &GenomicRegion,
     flank_len: usize,
 ) -> Result<(String, String, String)> {
-    let fetch_seq = |start: usize, end: usize| {
-        genome
-            .fetch_seq_string(&region.contig, start, end)
-            .map_err(|e| {
-                format!(
-                    "Error fetching sequence for region {}:{}-{}: {}",
-                    &region.contig, start, end, e
-                )
-            })
-            .map(|seq| seq.to_uppercase())
-    };
+    let full_start = region.start as usize - flank_len;
+    let full_end = region.end as usize + flank_len - 1;
 
-    let left_flank = fetch_seq(region.start as usize - flank_len, region.start as usize - 1)?;
-    let tr = fetch_seq(region.start as usize, region.end as usize - 1)?;
-    let right_flank = fetch_seq(region.end as usize, region.end as usize + flank_len - 1)?;
+    let full_seq = genome
+        .fetch_seq_string(&region.contig, full_start, full_end)
+        .map_err(|e| {
+            format!(
+                "Error fetching sequence for region {}:{}-{}: {}",
+                &region.contig, full_start, full_end, e
+            )
+        })?
+        .to_uppercase();
+
+    let tr_start = flank_len;
+    let tr_end = flank_len + (region.end - region.start) as usize;
+    let right_flank_start = tr_end;
+
+    let left_flank = full_seq[..tr_start].to_string();
+    let tr = full_seq[tr_start..tr_end].to_string();
+    let right_flank = full_seq[right_flank_start..].to_string();
 
     Ok((left_flank, tr, right_flank))
 }
 
-pub fn get_field(fields: &HashMap<&str, String>, key: &str) -> Result<String> {
+pub fn get_field(fields: &HashMap<&str, &str>, key: &str) -> Result<String> {
     fields
         .get(key)
         .ok_or_else(|| format!("{} field missing", key))
         .map(|s| s.to_string())
 }
 
-pub fn decode_fields(info_fields: &str) -> Result<HashMap<&str, String>> {
+pub fn decode_fields(info_fields: &str) -> Result<HashMap<&str, &str>> {
     let mut fields = HashMap::new();
     for field_encoding in info_fields.split(';') {
-        let (name, value) = decode_info_field(field_encoding).map_err(|e| e.to_string())?;
-        if fields.insert(name, value.to_string()).is_some() {
+        let (name, value) = decode_info_field(field_encoding)?;
+        if fields.insert(name, value).is_some() {
             return Err(format!("Duplicate field name: '{}'", name));
         }
     }
