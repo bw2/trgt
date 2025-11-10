@@ -1,31 +1,32 @@
 use crate::{
     merge::vcf_writer::OutputType,
-    utils::{Genotyper, Result, TrgtPreset, TrgtScoring},
+    preflight_fields,
+    utils::{Genotyper, InputSource, Result, TrgtPreset, TrgtScoring},
 };
 use chrono::Datelike;
-use clap::{ArgAction, ArgGroup, Parser, Subcommand};
-use env_logger::fmt::Color;
+use clap::{ArgAction, ArgGroup, Parser, Subcommand, ValueEnum};
 use log::{Level, LevelFilter};
-use once_cell::sync::Lazy;
+use owo_colors::{
+    colors::{Blue, Green, Magenta, Red, Yellow},
+    OwoColorize, Stream, Style,
+};
 use std::{
+    env,
     fs::File,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
 };
 
-pub static FULL_VERSION: Lazy<String> = Lazy::new(|| {
-    let git_describe = env!("VERGEN_GIT_DESCRIBE");
-    if git_describe.is_empty() {
-        env!("CARGO_PKG_VERSION").to_string()
-    } else {
-        format!("{}-{}", env!("CARGO_PKG_VERSION"), git_describe)
-    }
-});
+#[cfg(has_git_describe)]
+pub const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-", env!("VERGEN_GIT_DESCRIBE"));
+
+#[cfg(not(has_git_describe))]
+pub const FULL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
 #[command(name="trgt",
           author="Egor Dolzhenko <edolzhenko@pacificbiosciences.com>\nGuilherme De Sena Brandine <gbrandine@pacificbiosciences.com>\nTom Mokveld <tmokveld@pacificbiosciences.com>", 
-          version=&**FULL_VERSION,
+          version=FULL_VERSION,
           long_about = None,
           disable_help_subcommand = true,
           after_help = format!("Copyright (C) 2004-{}     Pacific Biosciences of California, Inc.
@@ -36,6 +37,9 @@ Research Use Only and not for use in diagnostic procedures.", chrono::Utc::now()
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+    /// Enable or disable color output in logging
+    #[arg(long, value_enum, default_value_t = Color::Auto, global = true, help_heading = "Advanced")]
+    color: Color,
 
     /// Specify multiple times to increase verbosity level (e.g., -vv for more verbosity)
     #[arg(
@@ -73,215 +77,23 @@ impl Command {
     }
 }
 
-#[derive(Parser, Debug)]
-#[command(group(
-    ArgGroup::new("input")
-        .required(true)
-        .args(["vcfs", "vcf_list"]),
-))]
-#[command(arg_required_else_help(true))]
-pub struct MergeArgs {
-    /// VCF files to merge
-    #[arg(
-        long = "vcf",
-        value_name = "VCF",
-        num_args = 1..,
-        value_parser = check_file_exists
-    )]
-    pub vcfs: Option<Vec<PathBuf>>,
-
-    /// File containing paths of VCF files to merge (one per line)
-    #[arg(
-        long = "vcf-list",
-        value_name = "VCF_LIST",
-        value_parser = check_file_exists
-    )]
-    pub vcf_list: Option<PathBuf>,
-
-    /// Path to reference genome FASTA
-    #[arg(
-         short = 'g',
-         long = "genome",
-         value_name = "FASTA",
-         value_parser = check_file_exists
-     )]
-    pub genome_path: Option<PathBuf>,
-
-    /// Write output to a file [standard output]
-    #[arg(
-        short = 'o',
-        long = "output",
-        value_name = "FILE",
-        value_parser = check_prefix_path
-    )]
-    pub output: Option<PathBuf>,
-
-    /// Output type: u|b|v|z, u/b: un/compressed BCF, v/z: un/compressed VCF
-    #[arg(
-        short = 'O',
-        long = "output-type",
-        value_name = "OUTPUT_TYPE",
-        value_parser = merge_validate_output_type,
-        help_heading = "Advanced"
-    )]
-    pub output_type: Option<OutputType>,
-
-    /// Skip the first N records
-    #[arg(long = "skip-n", value_name = "SKIP_N", help_heading = "Advanced")]
-    pub skip_n: Option<usize>,
-
-    /// Only process N records
-    #[arg(
-        long = "process-n",
-        value_name = "PROCESS_N",
-        help_heading = "Advanced"
-    )]
-    pub process_n: Option<usize>,
-
-    /// Print only the merged header and exit
-    #[arg(long = "print-header", help_heading = "Advanced")]
-    pub print_header: bool,
-
-    /// Run even if there is only one file on input
-    #[arg(long = "force-single", help_heading = "Advanced")]
-    pub force_single: bool,
-
-    /// Resolve duplicate sample names
-    #[arg(long = "force-samples", help_heading = "Advanced", hide = true)]
-    pub force_samples: bool,
-
-    /// Do not append version and command line to the header
-    #[arg(long = "no-version", help_heading = "Advanced")]
-    pub no_version: bool,
-
-    /// Assume genotypes at missing sites are 0/0
-    #[arg(long = "missing-to-ref", help_heading = "Advanced", hide = true)]
-    pub missing_to_ref: bool,
-
-    /// Set variant merging strategy to use
-    #[arg(
-        long = "strategy",
-        value_name = "STRATEGY",
-        value_parser = ["exact"],
-        default_value = "exact",
-        help_heading = "Advanced",
-        hide = true
-    )]
-    pub merge_strategy: String,
-
-    /// Quit immediately on errors during merging
-    #[arg(long = "quit-on-errors", help_heading = "Advanced")]
-    pub quit_on_error: bool,
-
-    /// Process only the specified contigs (comma-separated list)
-    #[arg(
-        long = "contig",
-        value_name = "CONTIG",
-        value_delimiter = ',',
-        help_heading = "Advanced"
-    )]
-    pub contigs: Option<Vec<String>>,
-}
-
-#[derive(Parser, Debug, Clone)]
-#[command(group(ArgGroup::new("deepdive")))]
-#[command(arg_required_else_help(true))]
-pub struct DeepdiveArgs {
-    /// Path to reference genome FASTA
-    #[arg(
-        short = 'g',
-        long = "genome",
-        value_name = "FASTA",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub genome_path: PathBuf,
-
-    /// VCF file generated by trgt genotype
-    #[arg(
-        short = 'f',
-        long = "vcf",
-        value_name = "VCF",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub bcf_path: PathBuf,
-
-    /// BED file with repeat coordinates
-    #[arg(
-        short = 'b',
-        long = "repeats",
-        value_name = "REPEATS",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub repeats_path: PathBuf,
-
-    /// BAM file with spanning reads generated by trgt genotype
-    #[arg(
-        short = 'r',
-        long = "spanning-reads",
-        value_name = "SPANNING_READS",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub reads_path: PathBuf,
-
-    /// ID of the repeat to realign
-    #[arg(
-        short = 'i',
-        long = "repeat-id",
-        value_name = "REPEAT_ID",
-        required = true
-    )]
-    pub tr_id: String,
-
-    /// Prefix for output files .fasta and .bam
-    #[arg(
-        short = 'o',
-        long = "output-prefix",
-        value_name = "OUTPUT_PREFIX",
-        value_parser = check_prefix_path,
-        required = true
-    )]
-    pub output_prefix: PathBuf,
-}
-
 #[derive(Parser, Debug, Clone)]
 #[command(group(ArgGroup::new("genotype")))]
 #[command(arg_required_else_help(true))]
 pub struct GenotypeArgs {
     /// Path to reference genome FASTA
-    #[arg(
-        short = 'g',
-        long = "genome",
-        value_name = "FASTA",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub genome_path: PathBuf,
+    #[arg(short = 'g', long = "genome", value_name = "FASTA", required = true)]
+    pub genome_src: InputSource,
 
     /// BAM file with aligned HiFi reads
-    #[arg(
-        short = 'r',
-        long = "reads",
-        value_name = "READS",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub reads_path: PathBuf,
+    #[arg(short = 'r', long = "reads", value_name = "READS", required = true)]
+    pub reads_src: InputSource,
 
     /// BED file with repeat coordinates
-    #[arg(
-        short = 'b',
-        long = "repeats",
-        value_name = "REPEATS",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub repeats_path: PathBuf,
+    #[arg(short = 'b', long = "repeats", value_name = "REPEATS", required = true)]
+    pub repeats_src: InputSource,
 
-    /// Prefix for output files
+    /// Prefix for output files (.vcf.gz and .spanning.bam)
     #[arg(
         short = 'o',
         long = "output-prefix",
@@ -381,7 +193,8 @@ pub struct GenotypeArgs {
     #[arg(
         long = "fixed-flanks",
         value_name = "FIXED_FLANKS",
-        help_heading = "Advanced"
+        help_heading = "Advanced",
+        hide = true
     )]
     pub fixed_flanks: bool,
 
@@ -490,49 +303,36 @@ pub struct GenotypeArgs {
     pub result_channel_buffer_size: usize,
 }
 
+impl GenotypeArgs {
+    pub fn preflight(&self) -> Result<()> {
+        preflight_fields!(self, genome_src, reads_src, repeats_src)
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(group(ArgGroup::new("plot")))]
 #[command(arg_required_else_help(true))]
 pub struct PlotArgs {
     /// Path to reference genome FASTA
-    #[arg(
-        short = 'g',
-        long = "genome",
-        value_name = "FASTA",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub genome_path: PathBuf,
+    #[arg(short = 'g', long = "genome", value_name = "FASTA", required = true)]
+    pub genome_src: InputSource,
 
     /// BED file with repeat coordinates
-    #[arg(
-        short = 'b',
-        long = "repeats",
-        value_name = "REPEATS",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub repeats_path: PathBuf,
+    #[arg(short = 'b', long = "repeats", value_name = "REPEATS", required = true)]
+    pub repeats_src: InputSource,
 
     /// VCF file generated by TRGT
-    #[arg(
-        short = 'f',
-        long = "vcf",
-        value_name = "VCF",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub bcf_path: PathBuf,
+    #[arg(short = 'f', long = "vcf", value_name = "VCF", required = true)]
+    pub bcf_src: InputSource,
 
     /// BAM file with spanning reads generated by TRGT
     #[arg(
         short = 'r',
         long = "spanning-reads",
         value_name = "SPANNING_READS",
-        value_parser = check_file_exists,
         required = true
     )]
-    pub reads_path: PathBuf,
+    pub reads_src: InputSource,
 
     /// ID of the repeat to plot
     #[arg(
@@ -599,29 +399,220 @@ pub struct PlotArgs {
     pub max_allele_reads: Option<usize>,
 }
 
+impl PlotArgs {
+    pub fn preflight(&self) -> Result<()> {
+        preflight_fields!(self, genome_src, repeats_src, bcf_src, reads_src)
+    }
+}
+
+#[derive(Parser, Debug)]
+#[command(group(
+    ArgGroup::new("input")
+        .required(true)
+        .args(["vcfs", "vcf_list"]),
+))]
+#[command(arg_required_else_help(true))]
+pub struct MergeArgs {
+    /// VCF files to merge
+    #[arg(
+        long = "vcf",
+        value_name = "VCF",
+        num_args = 1..,
+        value_parser = check_file_exists
+    )]
+    pub vcfs: Option<Vec<PathBuf>>,
+
+    /// File containing paths of VCF files to merge (one per line)
+    #[arg(
+        long = "vcf-list",
+        value_name = "VCF_LIST",
+        value_parser = check_file_exists
+    )]
+    pub vcf_list: Option<PathBuf>,
+
+    /// Path to reference genome FASTA
+    #[arg(short = 'g', long = "genome", value_name = "FASTA")]
+    pub genome_src: Option<InputSource>,
+
+    /// Write output to a file [standard output]
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "FILE",
+        value_parser = check_prefix_path
+    )]
+    pub output: Option<PathBuf>,
+
+    /// Output type: u|b|v|z, u/b: un/compressed BCF, v/z: un/compressed VCF
+    #[arg(
+        short = 'O',
+        long = "output-type",
+        value_name = "OUTPUT_TYPE",
+        value_parser = merge_validate_output_type,
+        help_heading = "Advanced"
+    )]
+    pub output_type: Option<OutputType>,
+
+    /// Skip the first N records
+    #[arg(long = "skip-n", value_name = "SKIP_N", help_heading = "Advanced")]
+    pub skip_n: Option<usize>,
+
+    /// Only process N records
+    #[arg(
+        long = "process-n",
+        value_name = "PROCESS_N",
+        help_heading = "Advanced"
+    )]
+    pub process_n: Option<usize>,
+
+    /// Print only the merged header and exit
+    #[arg(long = "print-header", help_heading = "Advanced")]
+    pub print_header: bool,
+
+    /// Run even if there is only one file on input
+    #[arg(long = "force-single", help_heading = "Advanced")]
+    pub force_single: bool,
+
+    /// Resolve duplicate sample names
+    #[arg(long = "force-samples", help_heading = "Advanced", hide = true)]
+    pub force_samples: bool,
+
+    /// Do not append version and command line to the header
+    #[arg(long = "no-version", help_heading = "Advanced")]
+    pub no_version: bool,
+
+    /// Assume genotypes at missing sites are 0/0
+    #[arg(long = "missing-to-ref", help_heading = "Advanced", hide = true)]
+    pub missing_to_ref: bool,
+
+    /// Set variant merging strategy to use
+    #[arg(
+        long = "strategy",
+        value_name = "STRATEGY",
+        value_parser = ["exact"],
+        default_value = "exact",
+        help_heading = "Advanced",
+        hide = true
+    )]
+    pub merge_strategy: String,
+
+    /// Quit immediately on errors during merging
+    #[arg(long = "quit-on-errors", help_heading = "Advanced")]
+    pub quit_on_error: bool,
+
+    /// Process only the specified contigs (comma-separated list)
+    #[arg(
+        long = "contig",
+        value_name = "CONTIG",
+        value_delimiter = ',',
+        help_heading = "Advanced"
+    )]
+    pub contigs: Option<Vec<String>>,
+}
+
+impl MergeArgs {
+    pub fn process_vcf_paths(&self) -> Result<Vec<PathBuf>> {
+        match (&self.vcfs, &self.vcf_list) {
+            (Some(vcfs), None) => Ok(vcfs.clone()),
+            (None, Some(list_path)) => Self::read_vcf_paths_from_file(list_path),
+            _ => unreachable!("Either --vcf or --vcf-list is provided, never both"),
+        }
+    }
+
+    fn read_vcf_paths_from_file(path: &Path) -> Result<Vec<PathBuf>> {
+        let file = File::open(path)
+            .map_err(|e| format!("Failed to open VCF list file {}: {}", path.display(), e))?;
+        let reader = BufReader::new(file);
+
+        let mut paths = Vec::new();
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line.map_err(|e| format!("Error reading line {}: {}", line_num + 1, e))?;
+            let trimmed = line.trim();
+            // Skip empty or comment lines
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let path = PathBuf::from(trimmed);
+            if !path.exists() {
+                Err(format!("VCF file does not exist: {}", path.display()))?;
+            }
+            paths.push(path);
+        }
+
+        if paths.is_empty() {
+            Err("No VCF paths found in the input file".to_string())?;
+        }
+
+        Ok(paths)
+    }
+
+    pub fn preflight(&self) -> Result<()> {
+        preflight_fields!(self, genome_src)
+    }
+}
+
+#[derive(Parser, Debug, Clone)]
+#[command(group(ArgGroup::new("deepdive")))]
+#[command(arg_required_else_help(true))]
+pub struct DeepdiveArgs {
+    /// Path to reference genome FASTA
+    #[arg(short = 'g', long = "genome", value_name = "FASTA", required = true)]
+    pub genome_src: InputSource,
+
+    /// VCF file generated by trgt genotype
+    #[arg(short = 'f', long = "vcf", value_name = "VCF", required = true)]
+    pub bcf_src: InputSource,
+
+    /// BED file with repeat coordinates
+    #[arg(short = 'b', long = "repeats", value_name = "REPEATS", required = true)]
+    pub repeats_src: InputSource,
+
+    /// BAM file with spanning reads generated by trgt genotype
+    #[arg(
+        short = 'r',
+        long = "spanning-reads",
+        value_name = "SPANNING_READS",
+        required = true
+    )]
+    pub reads_src: InputSource,
+
+    /// ID of the repeat to realign
+    #[arg(
+        short = 'i',
+        long = "repeat-id",
+        value_name = "REPEAT_ID",
+        required = true
+    )]
+    pub tr_id: String,
+
+    /// Prefix for output files (.fasta, .bed, and .bam)
+    #[arg(
+        short = 'o',
+        long = "output-prefix",
+        value_name = "OUTPUT_PREFIX",
+        value_parser = check_prefix_path,
+        required = true
+    )]
+    pub output_prefix: PathBuf,
+}
+
+impl DeepdiveArgs {
+    pub fn preflight(&self) -> Result<()> {
+        preflight_fields!(self, genome_src, bcf_src, repeats_src, reads_src)
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(group(ArgGroup::new("validate")))]
 #[command(arg_required_else_help(true))]
 pub struct ValidateArgs {
     /// Path to reference genome FASTA
-    #[arg(
-        short = 'g',
-        long = "genome",
-        value_name = "FASTA",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub genome_path: PathBuf,
+    #[arg(short = 'g', long = "genome", value_name = "FASTA", required = true)]
+    pub genome_src: InputSource,
 
     /// BED file with repeat coordinates
-    #[arg(
-        short = 'b',
-        long = "repeats",
-        value_name = "REPEATS",
-        value_parser = check_file_exists,
-        required = true
-    )]
-    pub repeats_path: PathBuf,
+    #[arg(short = 'b', long = "repeats", value_name = "REPEATS", required = true)]
+    pub repeats_src: InputSource,
 
     /// Length of flanking regions
     #[arg(
@@ -633,7 +624,32 @@ pub struct ValidateArgs {
     pub flank_len: usize,
 }
 
+impl ValidateArgs {
+    pub fn preflight(&self) -> Result<()> {
+        preflight_fields!(self, genome_src, repeats_src)
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Color {
+    Always,
+    Auto,
+    Never,
+}
+
+impl Color {
+    fn apply(self) {
+        match self {
+            Color::Always => owo_colors::set_override(true),
+            Color::Auto => {}
+            Color::Never => owo_colors::set_override(false),
+        }
+    }
+}
+
 pub fn init_verbose(args: &Cli) {
+    args.color.apply();
+
     let filter_level: LevelFilter = match args.verbosity {
         0 => LevelFilter::Warn,
         1 => LevelFilter::Info,
@@ -642,27 +658,27 @@ pub fn init_verbose(args: &Cli) {
     };
 
     env_logger::Builder::from_default_env()
-        .format(|buf, record| {
-            let level = record.level();
-            let mut style = buf.style();
-            match record.level() {
-                Level::Error => style.set_color(Color::Red),
-                Level::Warn => style.set_color(Color::Yellow),
-                Level::Info => style.set_color(Color::Green),
-                Level::Debug => style.set_color(Color::Blue),
-                Level::Trace => style.set_color(Color::Cyan),
-            };
-
-            writeln!(
-                buf,
-                "{} [{}] - {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                style.value(level),
-                record.args()
-            )
-        })
+        .format(format_log)
         .filter_level(filter_level)
         .init();
+}
+
+#[inline(always)]
+fn level_style(level: Level) -> (&'static str, Style) {
+    match level {
+        Level::Error => ("ERROR", Style::new().fg::<Red>().bold()),
+        Level::Warn => ("WARN", Style::new().fg::<Yellow>()),
+        Level::Info => ("INFO", Style::new().fg::<Green>()),
+        Level::Debug => ("DEBUG", Style::new().fg::<Blue>()),
+        Level::Trace => ("TRACE", Style::new().fg::<Magenta>()),
+    }
+}
+
+fn format_log(buf: &mut env_logger::fmt::Formatter, record: &log::Record) -> std::io::Result<()> {
+    let (label, style) = level_style(record.level());
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let painted_label = label.if_supports_color(Stream::Stderr, |t| style.style(t));
+    writeln!(buf, "{ts} [{}] - {}", painted_label, record.args())
 }
 
 fn check_prefix_path(s: &str) -> Result<PathBuf> {
@@ -803,41 +819,4 @@ fn merge_validate_output_type(s: &str) -> Result<OutputType> {
         "Invalid output type: {}. Must be one of u, b, v, z.",
         s
     ))
-}
-
-impl MergeArgs {
-    pub fn process_vcf_paths(&self) -> Result<Vec<PathBuf>> {
-        match (&self.vcfs, &self.vcf_list) {
-            (Some(vcfs), None) => Ok(vcfs.clone()),
-            (None, Some(list_path)) => Self::read_vcf_paths_from_file(list_path),
-            _ => unreachable!("Either --vcf or --vcf-list is provided, never both"),
-        }
-    }
-
-    fn read_vcf_paths_from_file(path: &Path) -> Result<Vec<PathBuf>> {
-        let file = File::open(path)
-            .map_err(|e| format!("Failed to open VCF list file {}: {}", path.display(), e))?;
-        let reader = BufReader::new(file);
-
-        let mut paths = Vec::new();
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line.map_err(|e| format!("Error reading line {}: {}", line_num + 1, e))?;
-            let trimmed = line.trim();
-            // Skip empty or comment lines
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let path = PathBuf::from(trimmed);
-            if !path.exists() {
-                Err(format!("VCF file does not exist: {}", path.display()))?;
-            }
-            paths.push(path);
-        }
-
-        if paths.is_empty() {
-            Err("No VCF paths found in the input file".to_string())?;
-        }
-
-        Ok(paths)
-    }
 }

@@ -6,14 +6,13 @@ use crate::trgt::{
 };
 use crate::utils::Result;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use rust_htslib::{
     bam,
     bcf::{self, record::GenotypeAllele, Format, Record},
 };
 use std::env;
 
-static MISSING_FLOAT: Lazy<f32> = Lazy::new(|| f32::from_bits(0x7F80_0001));
+const MISSING_FLOAT: f32 = f32::from_bits(0x7F80_0001);
 
 /// Header lines defining the INFO and FORMAT fields for the VCF file.
 const VCF_LINES: [&str; 12] = [
@@ -69,7 +68,7 @@ impl VcfWriter {
         let line = format!(
             "##{}Version={}",
             env!("CARGO_PKG_NAME"),
-            *crate::cli::FULL_VERSION
+            crate::cli::FULL_VERSION
         );
         vcf_header.push_record(line.as_bytes());
 
@@ -109,17 +108,24 @@ impl VcfWriter {
     /// * `record` - Mutable `Record` struct where the information will be added.
     fn add_locus_info(&mut self, locus: &Locus, record: &mut Record) {
         let contig = locus.region.contig.as_bytes();
-        let rid = self.writer.header().name2rid(contig).unwrap();
+        let rid = self.writer.header().name2rid(contig).unwrap_or_else(|_| {
+            panic!("Contig {:?} not present in VCF header", locus.region.contig)
+        });
         record.set_rid(Some(rid));
         record.set_pos(locus.region.start.saturating_sub(1) as i64);
-        record.set_qual(*MISSING_FLOAT);
+        record.set_qual(MISSING_FLOAT);
 
         let id = locus.id.as_bytes();
         record.push_info_string(b"TRID", &[id]).unwrap();
         record
             .push_info_integer(b"END", &[locus.region.end as i32])
             .unwrap();
-        let motifs = locus.motifs.join(",");
+        let motifs = locus
+            .motifs
+            .iter()
+            .map(|m| std::str::from_utf8(m).unwrap())
+            .collect::<Vec<_>>()
+            .join(",");
         record
             .push_info_string(b"MOTIFS", &[motifs.as_bytes()])
             .unwrap();
@@ -136,11 +142,10 @@ impl VcfWriter {
     fn add_missing_allele_info(&mut self, locus: &Locus, record: &mut Record) {
         let pad_base = *locus
             .left_flank
-            .as_bytes()
             .last()
             .expect("Empty flanks are not allowed");
         let mut tr_seq = vec![pad_base];
-        tr_seq.extend(locus.tr.as_bytes());
+        tr_seq.extend(&locus.tr);
         record
             .set_alleles(&[&tr_seq])
             .expect("Failed to set alleles");
@@ -216,8 +221,9 @@ impl VcfWriter {
     /// This method constructs the genotype (GT) field for the VCF record by comparing the genotyped alleles
     /// to the reference tandem repeat sequence. It assigns allele indexes and encodes them in VCF format.
     fn set_gt(locus: &Locus, results: &LocusResult, record: &mut Record) {
-        let mut seqs = vec![locus.tr.as_bytes()];
-        let mut indexes = Vec::new();
+        let mut seqs = vec![locus.tr.as_slice()];
+        let mut indexes = Vec::with_capacity(2);
+
         let gt = &results.genotype;
         for allele in gt {
             if allele.seq == locus.tr {
@@ -227,33 +233,35 @@ impl VcfWriter {
 
             if seqs.len() == 1 {
                 indexes.push(GenotypeAllele::Unphased(1));
-                seqs.push(allele.seq.as_bytes());
+                seqs.push(allele.seq.as_slice());
             } else if gt[0].seq == gt[1].seq {
                 indexes.push(GenotypeAllele::Unphased(1));
             } else {
                 indexes.push(GenotypeAllele::Unphased(2));
-                seqs.push(allele.seq.as_bytes());
+                seqs.push(allele.seq.as_slice());
             }
         }
 
         let pad_base = *locus
             .left_flank
-            .as_bytes()
             .last()
             .expect("Empty flanks are not allowed");
-        let padded_seqs = seqs
+
+        let padded_seqs: Vec<Vec<u8>> = seqs
             .iter()
             .map(|s| {
-                let mut padded_seq = vec![pad_base];
-                padded_seq.extend(s.iter());
-                padded_seq
+                let mut v = Vec::with_capacity(s.len() + 1);
+                v.push(pad_base);
+                v.extend_from_slice(s);
+                v
             })
-            .collect_vec();
-        let encoding = padded_seqs.iter().map(|s| &s[..]).collect_vec();
+            .collect();
+
+        let encoding: Vec<&[u8]> = padded_seqs.iter().map(Vec::as_slice).collect();
+
         record
             .set_alleles(&encoding)
             .expect("Failed to set alleles");
-
         record.push_genotypes(&indexes).unwrap();
     }
 

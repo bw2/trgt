@@ -3,15 +3,14 @@ use super::align_allele::get_allele_align;
 use super::params::{get_meth_colors, Color, ColorMap, PlotParams};
 use super::scale::get_scale;
 use crate::trvz::align::{Align, AlignOp};
-use crate::utils::locus::Locus;
-use crate::utils::read::{Betas, Read};
+use crate::utils::{locus::Locus, read::Betas, read::Read};
 use itertools::Itertools;
 use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape};
 
 pub fn plot_alleles(
     locus: &Locus,
     what_to_show: &str,
-    allele_seqs: &[String],
+    allele_seqs: &[Vec<u8>],
     reads: &[Read],
     params: PlotParams,
 ) -> PipePlot {
@@ -26,7 +25,6 @@ pub fn plot_alleles(
             get_allele_align(locus, allele_seq, &allele_reads)
         })
         .collect_vec();
-
     let allele_height = 4;
     let xpos = 0;
     let mut ypos = 0;
@@ -81,7 +79,7 @@ pub fn plot_alleles(
     let mut labels = Vec::new();
     for (index, motif) in locus.motifs.iter().enumerate() {
         let color = params.colors.get(&SegType::Tr(index)).unwrap().to_string();
-        labels.push((motif.clone(), color));
+        labels.push((std::str::from_utf8(motif).unwrap().to_string(), color));
     }
     if what_to_show == "meth" {
         labels.push(("Methylated".to_string(), Color::Grad(1.0).to_string()));

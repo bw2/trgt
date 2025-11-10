@@ -43,25 +43,21 @@ pub fn make_consensus(
     trs: &[&[u8]],
     dists: &[f64],
     group: &[usize],
-) -> (String, TrSize) {
-    let seqs = group
-        .iter()
-        .map(|&i| std::str::from_utf8(trs[i]).unwrap())
-        .collect_vec();
-    let backbone = std::str::from_utf8(trs[central_read(num_seqs, group, dists)]).unwrap();
+) -> (Vec<u8>, TrSize) {
+    let backbone = trs[central_read(num_seqs, group, dists)];
+    let seqs = group.iter().map(|&i| trs[i]).collect_vec();
     let aligns = align(backbone, &seqs);
     let allele = consensus::repair_consensus(backbone, &seqs, &aligns);
     let size = TrSize::new(allele.len(), get_ci(&seqs));
     (allele, size)
 }
 
-pub fn genotype(ploidy: Ploidy, trs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
-    let trs: Vec<&[u8]> = trs.iter().map(|x| x.as_bytes()).collect();
-    let mut dists = get_dist_matrix(&trs);
+pub fn genotype(ploidy: Ploidy, trs: &[&[u8]]) -> (Gt, Vec<Vec<u8>>, Vec<i32>) {
+    let mut dists = get_dist_matrix(trs);
     let num_seqs = trs.len();
     if ploidy == Ploidy::One || num_seqs == 1 {
         let group: Vec<usize> = (0..num_seqs).collect();
-        let (allele, size) = make_consensus(num_seqs, &trs, &dists, &group);
+        let (allele, size) = make_consensus(num_seqs, trs, &dists, &group);
         let classifications = vec![0; num_seqs];
         if ploidy == Ploidy::One {
             let gt = Gt::from(size);
@@ -79,8 +75,8 @@ pub fn genotype(ploidy: Ploidy, trs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
     let group1 = groups.pop().unwrap();
     let group2 = groups.pop().unwrap();
 
-    let (allele1, size1) = make_consensus(num_seqs, &trs, &dists, &group1);
-    let (allele2, size2) = make_consensus(num_seqs, &trs, &dists, &group2);
+    let (allele1, size1) = make_consensus(num_seqs, trs, &dists, &group1);
+    let (allele2, size2) = make_consensus(num_seqs, trs, &dists, &group2);
 
     // GS: this should be handled better, but for now we just check for small
     // differences in size and large differences in cov
@@ -96,8 +92,8 @@ pub fn genotype(ploidy: Ploidy, trs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
         // redo the homozygous case
         let group1: Vec<usize> = (0..num_seqs).step_by(2).collect();
         let group2: Vec<usize> = (1..num_seqs).step_by(2).collect();
-        let (allele1, size1) = make_consensus(num_seqs, &trs, &dists, &group1);
-        let (allele2, size2) = make_consensus(num_seqs, &trs, &dists, &group2);
+        let (allele1, size1) = make_consensus(num_seqs, trs, &dists, &group1);
+        let (allele2, size2) = make_consensus(num_seqs, trs, &dists, &group2);
         let mut classifications: Vec<i32> = (0..num_seqs).map(|x| (x % 2) as i32).collect();
         let (gt, alleles) = if allele1.len() > allele2.len() {
             classifications = classifications.iter().map(|x| 1 - x).collect();
@@ -118,14 +114,14 @@ pub fn genotype(ploidy: Ploidy, trs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
     }
 
     // assign outlier reads (discarded in cluster()) to the closest consensus
-    let a1 = allele1.as_bytes();
-    let a2 = allele2.as_bytes();
+    let a1 = &allele1;
+    let a2 = &allele2;
 
     // NOTE: Should this run in parallel?
+    let mut tie_breaker = 1;
     THREAD_WFA_ED.with(|aligner_cell| {
         let mut aligner = aligner_cell.borrow_mut();
         for i in 0..num_seqs {
-            let mut tie_breaker = 1;
             if classifications[i] == 2 {
                 let dist1 = get_dist(trs[i], a1, &mut aligner);
                 let dist2 = get_dist(trs[i], a2, &mut aligner);
@@ -226,7 +222,7 @@ pub fn cluster(num_seqs: usize, dists: &mut [f64]) -> Vec<Vec<usize>> {
     seqs_by_group
 }
 
-fn get_ci(seqs: &[&str]) -> (usize, usize) {
+fn get_ci(seqs: &[&[u8]]) -> (usize, usize) {
     let min_val = seqs.iter().map(|x| x.len()).min().unwrap();
     let max_val = seqs.iter().map(|x| x.len()).max().unwrap();
     (min_val, max_val)

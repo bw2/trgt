@@ -60,14 +60,14 @@ impl LocusGroup {
         self.loci.push(locus);
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn first_locus(&self) -> &Locus {
         &self.loci[0]
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn last_locus(&self) -> &Locus {
-        self.loci.last().unwrap()
+        self.loci.last().expect("non-empty group")
     }
 
     #[inline]
@@ -89,13 +89,14 @@ pub fn extract_reads_for_group(
     params: &Arc<Params>,
 ) -> Result<Vec<Locus>> {
     let flank_len = params.search_flank_len as u32;
+    let clip_radius = 2 * params.search_flank_len as i64;
     let group_region = &group.region;
     let reservoir_threshold = params.max_depth * 3;
 
     let extraction_region = (
         group_region.contig.as_str(),
         group_region.start.saturating_sub(flank_len),
-        group_region.end + flank_len,
+        group_region.end.saturating_add(flank_len),
     );
 
     if let Err(msg) = bam.fetch(extraction_region) {
@@ -108,7 +109,6 @@ pub fn extract_reads_for_group(
     let mut rng = StdRng::seed_from_u64(42);
     let mut n_reads_per_locus = vec![0; group.loci.len()];
     let mut locus_idx = 0;
-    let clip_radius = 2 * params.search_flank_len;
     let mut record = Record::new();
     while let Some(result) = bam.read(&mut record) {
         match result {
@@ -145,8 +145,8 @@ pub fn extract_reads_for_group(
 
                         if let Some(hifi_read) = &hifi_read_opt {
                             let region_to_clip = (
-                                locus.region.start as i64 - clip_radius as i64,
-                                locus.region.end as i64 + clip_radius as i64,
+                                locus.region.start as i64 - clip_radius,
+                                locus.region.end as i64 + clip_radius,
                             );
 
                             let current_count = n_reads_per_locus[i];
@@ -204,15 +204,15 @@ mod tests {
     fn create_test_locus(id: &str, contig: &str, start: u32, end: u32) -> Locus {
         Locus {
             id: id.to_string(),
-            left_flank: "AAAA".to_string(),
-            tr: "AAAA".to_string(),
-            right_flank: "AAAA".to_string(),
+            left_flank: b"AAAA".to_vec(),
+            tr: b"AAAA".to_vec(),
+            right_flank: b"AAAA".to_vec(),
             region: GenomicRegion {
                 contig: contig.to_string(),
                 start,
                 end,
             },
-            motifs: vec!["A".to_string()],
+            motifs: vec![b"A".to_vec()],
             struc: "(A)n".to_string(),
             ploidy: Ploidy::Two,
             genotyper: Genotyper::Size,

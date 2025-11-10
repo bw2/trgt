@@ -7,7 +7,6 @@ use crate::{
     cli::MergeArgs,
     utils::{format_number_with_commas, open_genome_reader, Result},
 };
-use once_cell::sync::Lazy;
 use rust_htslib::{
     bcf::{self, record::GenotypeAllele, Record},
     faidx,
@@ -23,8 +22,8 @@ use std::{
 
 const MISSING_INTEGER: i32 = i32::MIN;
 const VECTOR_END_INTEGER: i32 = i32::MIN + 1;
-static MISSING_FLOAT: Lazy<f32> = Lazy::new(|| f32::from_bits(0x7F80_0001));
-static VECTOR_END_FLOAT: Lazy<f32> = Lazy::new(|| f32::from_bits(0x7F80_0002));
+const MISSING_FLOAT: f32 = f32::from_bits(0x7F80_0001);
+const VECTOR_END_FLOAT: f32 = f32::from_bits(0x7F80_0002);
 
 struct FormatData {
     als: Vec<i32>,
@@ -94,7 +93,7 @@ macro_rules! impl_push_missing_and_end {
 }
 
 impl_push_missing_and_end!(i32, MISSING_INTEGER, VECTOR_END_INTEGER);
-impl_push_missing_and_end!(f32, *MISSING_FLOAT, *VECTOR_END_FLOAT);
+impl_push_missing_and_end!(f32, MISSING_FLOAT, VECTOR_END_FLOAT);
 impl_push_missing_and_end!(Vec<u8>, Vec::new(), Vec::new(), |vec: &mut Vec<Vec<u8>>| {
     vec.push(vec![b'.']);
 });
@@ -171,7 +170,7 @@ impl VcfProcessor {
             .any(|reader| reader.version.major < Version::new(1, 0, 0).major);
 
         let genome_reader = if needs_padding {
-            Some(open_genome_reader(args.genome_path.as_ref().ok_or(
+            Some(open_genome_reader(args.genome_src.as_ref().ok_or(
                 "A reference genome is required for merging pre v1.0 TRGT VCFs, provide as --genome ref.fa"
             )?)?)
         } else {
@@ -222,7 +221,7 @@ impl VcfProcessor {
         let version_line = format!(
             "##{}Version={}",
             env!("CARGO_PKG_NAME"),
-            *crate::cli::FULL_VERSION
+            crate::cli::FULL_VERSION
         );
         out_header.push_record(version_line.as_bytes());
 
@@ -441,7 +440,7 @@ impl VcfProcessor {
     fn set_dummy_record_fields(&mut self, template_record: &Record) {
         self.writer.dummy_record.set_rid(template_record.rid());
         self.writer.dummy_record.set_pos(template_record.pos());
-        self.writer.dummy_record.set_qual(*MISSING_FLOAT);
+        self.writer.dummy_record.set_qual(MISSING_FLOAT);
 
         self.set_info_field(template_record, b"TRID", FieldType::String);
         self.set_info_field(template_record, b"END", FieldType::Integer);
@@ -608,7 +607,7 @@ impl VcfProcessor {
         for sample_values in field.iter() {
             values.extend(sample_values.iter().copied());
             if sample_values.len() <= 1 {
-                values.push(*VECTOR_END_FLOAT);
+                values.push(VECTOR_END_FLOAT);
             }
         }
     }
@@ -640,7 +639,7 @@ impl VcfProcessor {
                         .iter()
                         .map(|&i| {
                             if i == i32::MIN {
-                                *MISSING_FLOAT
+                                MISSING_FLOAT
                             } else {
                                 i as f32 / 255.0
                             }
@@ -648,7 +647,7 @@ impl VcfProcessor {
                         .collect();
                     ams.extend(converted_am);
                     if sample_am.len() <= 1 {
-                        ams.push(*VECTOR_END_FLOAT);
+                        ams.push(VECTOR_END_FLOAT);
                     }
                 }
             }

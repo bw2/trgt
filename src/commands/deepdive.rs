@@ -1,16 +1,21 @@
-use crate::cli;
-use crate::cli::DeepdiveArgs;
+use crate::cli::{self, DeepdiveArgs};
 use crate::trgt::locus::create_chrom_lookup;
-use crate::utils::locus::Locus;
-use crate::utils::{input, open_catalog_reader, open_genome_reader, Result};
+use crate::utils::{
+    input::{get_alleles, get_reads},
+    locus::Locus,
+    {open_catalog_reader, open_genome_reader, Result},
+};
 use crate::wfaligner::{AlignmentScope, MemoryModel, WFAligner, WfaOp};
 use itertools::Itertools;
-use rust_htslib::bam::header::{Header, HeaderRecord};
-use rust_htslib::bam::record::{Aux, Cigar, CigarString};
-use rust_htslib::bam::{self, Record, Writer};
-use std::env;
-use std::fs::File;
-use std::io::{BufRead, BufWriter, Write};
+use rust_htslib::bam::{
+    header::{Header, HeaderRecord},
+    record::{Aux, Cigar, CigarString},
+    {self, Record, Writer},
+};
+use std::{
+    io::{BufRead, BufWriter, Write},
+    {env, fs::File},
+};
 
 /// Convert individual WFA ops to rust htslib
 fn op_to_cigar(op: WfaOp, len: u32) -> Cigar {
@@ -66,15 +71,15 @@ fn find_locus_line(catalog_reader: impl BufRead, tr_id: &str) -> Result<String> 
 /// outputs meant to be used on downstream tools, using the
 /// consensus sequences as the reference
 pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
-    let catalog_reader = open_catalog_reader(&args.repeats_path)?;
+    let catalog_reader = open_catalog_reader(&args.repeats_src)?;
     let locus_line = find_locus_line(catalog_reader, &args.tr_id)?;
 
-    let genome_reader = open_genome_reader(&args.genome_path)?;
+    let genome_reader = open_genome_reader(&args.genome_src)?;
     let chrom_lookup = create_chrom_lookup(&genome_reader)?;
 
     let locus_prelim = Locus::new(&genome_reader, &chrom_lookup, &locus_line, 0)
         .map_err(|e| format!("Error parsing locus line: {}", e))?;
-    let reads = input::get_reads(&args.reads_path, &locus_prelim, None)?;
+    let reads = get_reads(&args.reads_src, &locus_prelim, None)?;
 
     // largest FL value in spanning.bam reads to be used to fetch flanks
     let flank_length: usize = reads
@@ -86,7 +91,7 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
     let locus = Locus::new(&genome_reader, &chrom_lookup, &locus_line, flank_length)
         .map_err(|e| format!("Error parsing locus line: {}", e))?;
 
-    let allele_seqs = input::get_alleles(&args.bcf_path, &locus)?;
+    let allele_seqs = get_alleles(&args.bcf_src, &locus)?;
 
     let mut output_path_fasta = args.output_prefix.to_path_buf().into_os_string();
     output_path_fasta.push(".fasta");
@@ -101,7 +106,7 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
     pg_record.push_tag(b"VN", (*cli::FULL_VERSION).to_string());
     out_header.push_record(&pg_record);
 
-    let consensus_file = File::create(output_path_fasta)
+    let consensus_file = File::create(&output_path_fasta)
         .map_err(|e| format!("Error creating FASTA output: {}", e))?;
     let mut consensus_writer = BufWriter::new(consensus_file);
 
@@ -113,8 +118,13 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
     for (i, seq) in allele_seqs.iter().enumerate() {
         let consensus_name = format!("{}_{}", &locus.id, i);
         let consensus_len = seq.len();
-        writeln!(consensus_writer, ">{}\n{}", consensus_name, seq)
-            .map_err(|e| format!("Error writing entry into consensus FASTA: {}", e))?;
+        writeln!(
+            consensus_writer,
+            ">{}\n{}",
+            consensus_name,
+            std::str::from_utf8(seq).unwrap()
+        )
+        .map_err(|e| format!("Error writing entry into consensus FASTA: {}", e))?;
         writeln!(
             annotation_writer,
             "{}\t{}\t{}\tleft_flank",
@@ -155,6 +165,10 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
     consensus_writer
         .flush()
         .map_err(|e| format!("Error flushing FASTA writer: {}", e))?;
+
+    rust_htslib::faidx::build(output_path_fasta)
+        .map_err(|e| format!("Error building FASTA index: {}", e))?;
+
     annotation_writer
         .flush()
         .map_err(|e| format!("Error flushing BED writer: {}", e))?;
@@ -166,20 +180,20 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
         .affine(2, 5, 1)
         .build();
 
-    let left_flank = locus.left_flank.as_bytes();
-    let right_flank = locus.right_flank.as_bytes();
+    let left_flank = &locus.left_flank;
+    let right_flank = &locus.right_flank;
 
     // NB: allele sequences have flanks as well
     let allele_bytes = allele_seqs
         .iter()
-        .map(|x| &x.as_bytes()[left_flank.len()..x.len() - right_flank.len()])
+        .map(|x| &x[left_flank.len()..x.len() - right_flank.len()])
         .collect::<Vec<&[u8]>>();
 
     let mut bam_records = reads
         .iter()
         .map(|read| {
             let ind = read.allele as usize;
-            let seq = read.seq.as_bytes();
+            let seq = &read.seq;
 
             // locus slices
             let align_soft_clip_start = left_flank.len() - read.left_flank;
@@ -229,6 +243,8 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
             );
             rec.set_tid(ind as i32);
             rec.set_mapq(255_u8);
+            rec.set_pos(0);
+            rec.unset_unmapped();
 
             let ml_tag = read
                 .betas

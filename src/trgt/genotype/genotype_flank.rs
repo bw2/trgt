@@ -1,5 +1,5 @@
 use super::{consensus, Gt, TrSize};
-use crate::trgt::reads::{extract_mismatch_offsets, HiFiRead};
+use crate::trgt::reads::{extract_mismatch_offsets, LocusRead};
 use crate::utils::{align, median, GenomicRegion};
 use itertools::Itertools;
 use std::{cmp::Ordering, collections::BTreeMap};
@@ -7,10 +7,10 @@ use std::{cmp::Ordering, collections::BTreeMap};
 type Profile = Vec<Option<bool>>;
 
 pub fn genotype(
-    reads: &[HiFiRead],
-    tr_seqs: &[&str],
+    reads: &[&LocusRead],
+    tr_seqs: &[&[u8]],
     region: &GenomicRegion,
-) -> Option<(Gt, Vec<String>, Vec<i32>)> {
+) -> Option<(Gt, Vec<Vec<u8>>, Vec<i32>)> {
     let (trs_by_allele, mut allele_assignment) = get_trs_with_hp(reads, tr_seqs)
         .or_else(|| get_trs_with_clustering(reads, tr_seqs, region))?;
     let mut gt = Gt::new();
@@ -23,7 +23,7 @@ pub fn genotype(
             let aligns = align(&backbone, &trs);
             consensus::repair_consensus(&backbone, &trs, &aligns)
         } else {
-            backbone.to_string()
+            backbone
         };
 
         let min_tr_len = trs.iter().map(|tr| tr.len()).min().unwrap();
@@ -44,10 +44,11 @@ pub fn genotype(
     Some((gt, alleles, allele_assignment))
 }
 
+#[allow(clippy::type_complexity)]
 fn get_trs_with_hp<'a>(
-    reads: &[HiFiRead],
-    tr_seqs: &[&'a str],
-) -> Option<([Vec<&'a str>; 2], Vec<i32>)> {
+    reads: &[&LocusRead],
+    tr_seqs: &[&'a [u8]],
+) -> Option<([Vec<&'a [u8]>; 2], Vec<i32>)> {
     let mut allele_assignment = Vec::new();
     let mut trs_by_allele = [Vec::new(), Vec::new()];
     let mut assignment_tie_breaker: usize = 1;
@@ -79,11 +80,12 @@ fn get_trs_with_hp<'a>(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn get_trs_with_clustering<'a>(
-    reads: &[HiFiRead],
-    tr_seqs: &[&'a str],
+    reads: &[&LocusRead],
+    tr_seqs: &[&'a [u8]],
     region: &GenomicRegion,
-) -> Option<([Vec<&'a str>; 2], Vec<i32>)> {
+) -> Option<([Vec<&'a [u8]>; 2], Vec<i32>)> {
     if tr_seqs.is_empty() {
         return None;
     }
@@ -156,21 +158,25 @@ fn get_dist(read: &[Option<bool>], allele: &[bool]) -> usize {
 /// If multiple sequences have the same frequency,
 /// return the one whose length is closest to the median.
 ///
-fn simple_consensus(seqs: &[&str]) -> Option<(String, f64)> {
+fn simple_consensus(seqs: &[&[u8]]) -> Option<(Vec<u8>, f64)> {
     let median_len = median(&seqs.iter().map(|s| s.len() as i32).collect_vec())? as usize;
-    let mut seq_to_count = BTreeMap::new();
+
+    let mut seq_to_count: BTreeMap<&[u8], usize> = BTreeMap::new();
     for seq in seqs {
-        *seq_to_count.entry(*seq).or_insert(0) += 1;
+        *seq_to_count.entry(seq).or_default() += 1;
     }
+
     let top_group_size = *seq_to_count.values().max()?;
+    let top_group_frequency = top_group_size as f64 / seqs.len() as f64;
+
     let consensus = seq_to_count
-        .into_iter()
-        .filter(|(_, c)| *c == top_group_size)
-        .map(|(s, _)| (s, s.len().abs_diff(median_len)))
+        .iter()
+        .filter(|(_, &c)| c == top_group_size)
+        .map(|(&s, _)| (s, s.len().abs_diff(median_len)))
         .min_by_key(|(_, delta)| *delta)
-        .map(|(s, _)| s.to_string())?;
-    let top_group_frequency = (top_group_size as f64) / (seqs.len() as f64);
-    Some((consensus, top_group_frequency))
+        .map(|(s, _)| s)?;
+
+    Some((consensus.to_vec(), top_group_frequency))
 }
 
 fn get_loglik(gt: &(Vec<bool>, Vec<bool>), profiles: &[Profile]) -> f64 {
@@ -230,7 +236,7 @@ fn get_candidate_gts(profiles: &[Profile]) -> Vec<(Vec<bool>, Vec<bool>)> {
         .collect()
 }
 
-fn get_analysis_region(reads: &[HiFiRead], region: &GenomicRegion) -> (i64, i64) {
+fn get_analysis_region(reads: &[&LocusRead], region: &GenomicRegion) -> (i64, i64) {
     // min fraction of reads that must fully cover the left (right) flank
     const COV_READ_FRAC: f64 = 0.85;
     let skip_count = (reads.len() as f64 * (1.0 - COV_READ_FRAC)).round() as usize;
@@ -252,7 +258,7 @@ fn get_analysis_region(reads: &[HiFiRead], region: &GenomicRegion) -> (i64, i64)
     (region.start as i64 + start, region.end as i64 + end)
 }
 
-fn get_profiles(reads: &[HiFiRead], snvs: &[u32], region: &GenomicRegion) -> Vec<Profile> {
+fn get_profiles(reads: &[&LocusRead], snvs: &[u32], region: &GenomicRegion) -> Vec<Profile> {
     let region_start = region.start as i64;
     let region_end = region.end as i64;
     let snv_offsets = extract_mismatch_offsets(snvs, region.start, region.end);
@@ -288,7 +294,7 @@ fn get_profiles(reads: &[HiFiRead], snvs: &[u32], region: &GenomicRegion) -> Vec
 }
 
 fn call_snvs(
-    reads: &[HiFiRead],
+    reads: &[&LocusRead],
     region: &GenomicRegion,
     min_freq: f64,
     analysis_region: (i64, i64),
@@ -315,39 +321,38 @@ fn call_snvs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use itertools::Itertools;
 
     struct TestRead<'a> {
-        left_flank: &'a str,
-        tr_seq: &'a str,
-        right_flank: &'a str,
+        left_flank: &'a [u8],
+        tr_seq: &'a [u8],
+        right_flank: &'a [u8],
         ref_start: i64,
         hp_tag: Option<u8>,
     }
 
-    fn make_read(spec: &TestRead) -> HiFiRead {
+    fn make_read(spec: &TestRead) -> LocusRead {
         let left_len = spec.left_flank.len();
         let tr_len = spec.tr_seq.len();
 
         let mut mismatch_positions = Vec::new();
-        for (i, c) in spec.left_flank.chars().enumerate() {
-            if c == 'X' {
+        for (i, &c) in spec.left_flank.iter().enumerate() {
+            if c == b'X' {
                 mismatch_positions.push((spec.ref_start as usize + i) as u32);
             }
         }
-        for (i, c) in spec.right_flank.chars().enumerate() {
-            if c == 'X' {
+        for (i, &c) in spec.right_flank.iter().enumerate() {
+            if c == b'X' {
                 mismatch_positions.push((spec.ref_start as usize + left_len + tr_len + i) as u32);
             }
         }
 
         let ref_end = spec.ref_start + (left_len + tr_len + spec.right_flank.len()) as i64;
 
-        HiFiRead {
+        LocusRead {
             id: "read".to_string(),
             is_reverse: false,
-            bases: spec.tr_seq.as_bytes().to_vec(),
-            quals: "(".repeat(tr_len).as_bytes().to_vec(),
+            bases: spec.tr_seq.to_vec(),
+            quals: vec![b'('; tr_len],
             meth: None,
             read_qual: None,
             mismatch_positions: Some(mismatch_positions),
@@ -359,7 +364,7 @@ mod tests {
         }
     }
 
-    fn make_reads(specs: &[TestRead]) -> Vec<HiFiRead> {
+    fn make_reads(specs: &[TestRead]) -> Vec<LocusRead> {
         specs.iter().map(make_read).collect_vec()
     }
 
@@ -367,58 +372,55 @@ mod tests {
     fn if_het_snvs_then_genotype() {
         let reads = make_reads(&[
             TestRead {
-                left_flank: "XX====",
-                tr_seq: "TATATATA",
-                right_flank: "===X===",
+                left_flank: b"XX====",
+                tr_seq: b"TATATATA",
+                right_flank: b"===X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX=X==",
-                tr_seq: "TATATATA",
-                right_flank: "===X===",
+                left_flank: b"XX=X==",
+                tr_seq: b"TATATATA",
+                right_flank: b"===X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX===",
-                tr_seq: "TATATATATA",
-                right_flank: "X=X===",
+                left_flank: b"XX===",
+                tr_seq: b"TATATATATA",
+                right_flank: b"X=X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX===",
-                tr_seq: "TATATATATA",
-                right_flank: "X=X===",
+                left_flank: b"XX===",
+                tr_seq: b"TATATATATA",
+                right_flank: b"X=X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX===",
-                tr_seq: "TATATATATA",
-                right_flank: "X==",
+                left_flank: b"XX===",
+                tr_seq: b"TATATATATA",
+                right_flank: b"X==",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATATA",
-                right_flank: "===X===",
+                left_flank: b"======",
+                tr_seq: b"TATATATA",
+                right_flank: b"===X===",
                 ref_start: 0,
                 hp_tag: None,
             },
         ]);
-        let tr_seqs = reads
-            .iter()
-            .map(|r| std::str::from_utf8(&r.bases).unwrap())
-            .collect_vec();
+        let tr_seqs: Vec<&[u8]> = reads.iter().map(|r| &r.bases[..]).collect_vec();
         let region = GenomicRegion::new("chr1", 6, 14).unwrap();
-        let result = genotype(&reads, &tr_seqs, &region);
+        let result = genotype(&reads.iter().collect_vec(), &tr_seqs, &region);
 
         let gt = Gt::from([TrSize::new(8, (8, 8)), TrSize::new(10, (10, 10))]);
 
-        let alleles = vec!["TATATATA".to_string(), "TATATATATA".to_string()];
+        let alleles = vec![b"TATATATA".to_vec(), b"TATATATATA".to_vec()];
         let assignment = vec![0, 0, 1, 1, 1, 0];
 
         assert_eq!(result, Some((gt, alleles, assignment)));
@@ -428,41 +430,38 @@ mod tests {
     fn if_hom_snvs_then_none() {
         let reads = make_reads(&[
             TestRead {
-                left_flank: "XX====",
-                tr_seq: "TATATATATA",
-                right_flank: "=X=X===",
+                left_flank: b"XX====",
+                tr_seq: b"TATATATATA",
+                right_flank: b"=X=X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX====",
-                tr_seq: "TATATATATA",
-                right_flank: "=X=X===",
+                left_flank: b"XX====",
+                tr_seq: b"TATATATATA",
+                right_flank: b"=X=X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX====",
-                tr_seq: "TATATATATA",
-                right_flank: "=X=X===",
+                left_flank: b"XX====",
+                tr_seq: b"TATATATATA",
+                right_flank: b"=X=X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX====",
-                tr_seq: "TATATATATA",
-                right_flank: "=X=X===",
+                left_flank: b"XX====",
+                tr_seq: b"TATATATATA",
+                right_flank: b"=X=X===",
                 ref_start: 0,
                 hp_tag: None,
             },
         ]);
 
-        let tr_seqs = reads
-            .iter()
-            .map(|r| std::str::from_utf8(&r.bases).unwrap())
-            .collect_vec();
+        let tr_seqs: Vec<&[u8]> = reads.iter().map(|r| &r.bases[..]).collect_vec();
         let region = GenomicRegion::new("chr1", 6, 16).unwrap();
-        let result = genotype(&reads, &tr_seqs, &region);
+        let result = genotype(&reads.iter().collect_vec(), &tr_seqs, &region);
         assert_eq!(result, None);
     }
 
@@ -470,26 +469,23 @@ mod tests {
     fn if_no_snvs_then_none() {
         let reads = make_reads(&[
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATATA",
-                right_flank: "=======",
+                left_flank: b"======",
+                tr_seq: b"TATATATA",
+                right_flank: b"=======",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATATATA",
-                right_flank: "=======",
+                left_flank: b"======",
+                tr_seq: b"TATATATATA",
+                right_flank: b"=======",
                 ref_start: 0,
                 hp_tag: None,
             },
         ]);
-        let tr_seqs = reads
-            .iter()
-            .map(|r| std::str::from_utf8(&r.bases).unwrap())
-            .collect_vec();
+        let tr_seqs: Vec<&[u8]> = reads.iter().map(|r| &r.bases[..]).collect_vec();
         let region = GenomicRegion::new("chr1", 6, 14).unwrap();
-        let result = genotype(&reads, &tr_seqs, &region);
+        let result = genotype(&reads.iter().collect_vec(), &tr_seqs, &region);
         assert_eq!(result, None);
     }
 
@@ -497,50 +493,47 @@ mod tests {
     fn if_hp_tags_then_genotype() {
         let reads = make_reads(&[
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATA",
-                right_flank: "======",
+                left_flank: b"======",
+                tr_seq: b"TATATA",
+                right_flank: b"======",
                 ref_start: 0,
                 hp_tag: Some(1),
             },
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATA",
-                right_flank: "======",
+                left_flank: b"======",
+                tr_seq: b"TATATA",
+                right_flank: b"======",
                 ref_start: 0,
                 hp_tag: Some(1),
             },
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATATATA",
-                right_flank: "======",
+                left_flank: b"======",
+                tr_seq: b"TATATATATA",
+                right_flank: b"======",
                 ref_start: 0,
                 hp_tag: Some(2),
             },
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATATATA",
-                right_flank: "======",
+                left_flank: b"======",
+                tr_seq: b"TATATATATA",
+                right_flank: b"======",
                 ref_start: 0,
                 hp_tag: Some(2),
             },
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATATATA",
-                right_flank: "======",
+                left_flank: b"======",
+                tr_seq: b"TATATATATA",
+                right_flank: b"======",
                 ref_start: 0,
                 hp_tag: Some(2),
             },
         ]);
-        let tr_seqs = reads
-            .iter()
-            .map(|r| std::str::from_utf8(&r.bases).unwrap())
-            .collect_vec();
+        let tr_seqs: Vec<&[u8]> = reads.iter().map(|r| &r.bases[..]).collect_vec();
         let region = GenomicRegion::new("chr1", 6, 12).unwrap();
-        let result = genotype(&reads, &tr_seqs, &region);
+        let result = genotype(&reads.iter().collect_vec(), &tr_seqs, &region);
 
         let gt = Gt::from([TrSize::new(6, (6, 6)), TrSize::new(10, (10, 10))]);
-        let alleles = vec!["TATATA".to_string(), "TATATATATA".to_string()];
+        let alleles = vec![b"TATATA".to_vec(), b"TATATATATA".to_vec()];
         let assignment = vec![0, 0, 1, 1, 1];
 
         assert_eq!(result, Some((gt, alleles, assignment)));
@@ -550,58 +543,55 @@ mod tests {
     fn if_hp_tags_insufficient_then_cluster() {
         let reads = make_reads(&[
             TestRead {
-                left_flank: "XX====",
-                tr_seq: "TATATATA",
-                right_flank: "===X===",
+                left_flank: b"XX====",
+                tr_seq: b"TATATATA",
+                right_flank: b"===X===",
                 ref_start: 0,
                 hp_tag: Some(1),
             },
             TestRead {
-                left_flank: "XX=X==",
-                tr_seq: "TATATATA",
-                right_flank: "===X===",
+                left_flank: b"XX=X==",
+                tr_seq: b"TATATATA",
+                right_flank: b"===X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX===",
-                tr_seq: "TATATATATA",
-                right_flank: "X=X===",
+                left_flank: b"XX===",
+                tr_seq: b"TATATATATA",
+                right_flank: b"X=X===",
                 ref_start: 0,
                 hp_tag: Some(2),
             },
             TestRead {
-                left_flank: "XX===",
-                tr_seq: "TATATATATA",
-                right_flank: "X=X===",
+                left_flank: b"XX===",
+                tr_seq: b"TATATATATA",
+                right_flank: b"X=X===",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "XX===",
-                tr_seq: "TATATATATA",
-                right_flank: "X==",
+                left_flank: b"XX===",
+                tr_seq: b"TATATATATA",
+                right_flank: b"X==",
                 ref_start: 0,
                 hp_tag: None,
             },
             TestRead {
-                left_flank: "======",
-                tr_seq: "TATATATA",
-                right_flank: "===X===",
+                left_flank: b"======",
+                tr_seq: b"TATATATA",
+                right_flank: b"===X===",
                 ref_start: 0,
                 hp_tag: None,
             },
         ]);
-        let tr_seqs = reads
-            .iter()
-            .map(|r| std::str::from_utf8(&r.bases).unwrap())
-            .collect_vec();
+        let tr_seqs: Vec<&[u8]> = reads.iter().map(|r| &r.bases[..]).collect_vec();
         let region = GenomicRegion::new("chr1", 6, 14).unwrap();
-        let result = genotype(&reads, &tr_seqs, &region);
+        let result = genotype(&reads.iter().collect_vec(), &tr_seqs, &region);
 
         let gt = Gt::from([TrSize::new(8, (8, 8)), TrSize::new(10, (10, 10))]);
 
-        let alleles = vec!["TATATATA".to_string(), "TATATATATA".to_string()];
+        let alleles = vec![b"TATATATA".to_vec(), b"TATATATATA".to_vec()];
         let assignment = vec![0, 0, 1, 1, 1, 0];
 
         assert_eq!(result, Some((gt, alleles, assignment)));
@@ -610,11 +600,11 @@ mod tests {
     #[test]
     fn snv_at_tr_start_is_ignored() {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
-        let reads = vec![HiFiRead {
+        let reads = vec![LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
-            bases: "GATTACA".as_bytes().to_vec(),
-            quals: "!!!!!!!".as_bytes().to_vec(),
+            bases: b"GATTACA".to_vec(),
+            quals: b"!!!!!!!".to_vec(),
             meth: None,
             read_qual: None,
             mismatch_positions: Some(vec![
@@ -629,19 +619,19 @@ mod tests {
             ref_end: 120,
         }];
 
-        let analysis_region = get_analysis_region(&reads, &region);
-        let snvs = call_snvs(&reads, &region, 0.20, analysis_region);
+        let analysis_region = get_analysis_region(&reads.iter().collect_vec(), &region);
+        let snvs = call_snvs(&reads.iter().collect_vec(), &region, 0.20, analysis_region);
         assert_eq!(snvs, vec![99]);
     }
 
     #[test]
     fn snv_at_tr_end_is_used() {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
-        let reads = vec![HiFiRead {
+        let reads = vec![LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
-            bases: "GATTACA".as_bytes().to_vec(),
-            quals: "!!!!!!!".as_bytes().to_vec(),
+            bases: b"GATTACA".to_vec(),
+            quals: b"!!!!!!!".to_vec(),
             meth: None,
             read_qual: None,
             //
@@ -657,8 +647,8 @@ mod tests {
             ref_end: 120,
         }];
 
-        let analysis_region = get_analysis_region(&reads, &region);
-        let snvs = call_snvs(&reads, &region, 0.20, analysis_region);
+        let analysis_region = get_analysis_region(&reads.iter().collect_vec(), &region);
+        let snvs = call_snvs(&reads.iter().collect_vec(), &region, 0.20, analysis_region);
         assert_eq!(snvs, vec![110, 111]);
     }
 
@@ -668,11 +658,11 @@ mod tests {
         let snvs = vec![95, 115];
 
         let reads = vec![
-            HiFiRead {
+            LocusRead {
                 id: "read1".to_string(),
                 is_reverse: false,
-                bases: "GATTACA".as_bytes().to_vec(),
-                quals: "!!!!!!!".as_bytes().to_vec(),
+                bases: b"GATTACA".to_vec(),
+                quals: b"!!!!!!!".to_vec(),
                 meth: None,
                 read_qual: None,
                 mismatch_positions: Some(vec![95, 115]),
@@ -682,11 +672,11 @@ mod tests {
                 ref_start: 90,
                 ref_end: 120,
             },
-            HiFiRead {
+            LocusRead {
                 id: "read2".to_string(),
                 is_reverse: false,
-                bases: "GATTACA".as_bytes().to_vec(),
-                quals: "!!!!!!!".as_bytes().to_vec(),
+                bases: b"GATTACA".to_vec(),
+                quals: b"!!!!!!!".to_vec(),
                 meth: None,
                 read_qual: None,
                 mismatch_positions: Some(vec![95]), // Has only first mismatch
@@ -698,7 +688,7 @@ mod tests {
             },
         ];
 
-        let profiles = get_profiles(&reads, &snvs, &region);
+        let profiles = get_profiles(&reads.iter().collect_vec(), &snvs, &region);
 
         assert_eq!(profiles.len(), 2);
         assert_eq!(profiles[0], vec![Some(true), Some(true)]);
@@ -710,11 +700,11 @@ mod tests {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
         let snvs = vec![95, 115];
 
-        let reads = vec![HiFiRead {
+        let reads = vec![LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
-            bases: "GATTACA".as_bytes().to_vec(),
-            quals: "!!!!!!!".as_bytes().to_vec(),
+            bases: b"GATTACA".to_vec(),
+            quals: b"!!!!!!!".to_vec(),
             meth: None,
             read_qual: None,
             mismatch_positions: Some(vec![95]),
@@ -725,7 +715,7 @@ mod tests {
             ref_end: 114,
         }];
 
-        let profiles = get_profiles(&reads, &snvs, &region);
+        let profiles = get_profiles(&reads.iter().collect_vec(), &snvs, &region);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0], vec![None, None]);
     }
@@ -735,11 +725,11 @@ mod tests {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
         let snvs = vec![95, 115];
 
-        let reads = vec![HiFiRead {
+        let reads = vec![LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
-            bases: "GATTACA".as_bytes().to_vec(),
-            quals: "!!!!!!!".as_bytes().to_vec(),
+            bases: b"GATTACA".to_vec(),
+            quals: b"!!!!!!!".to_vec(),
             meth: None,
             read_qual: None,
             mismatch_positions: Some(vec![95]),
@@ -750,7 +740,7 @@ mod tests {
             ref_end: 114, // Does not cover second SNV
         }];
 
-        let profiles = get_profiles(&reads, &snvs, &region);
+        let profiles = get_profiles(&reads.iter().collect_vec(), &snvs, &region);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0], vec![Some(true), None]);
     }
@@ -760,11 +750,11 @@ mod tests {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
         let snvs = vec![95, 115];
 
-        let reads = vec![HiFiRead {
+        let reads = vec![LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
-            bases: "GATTACA".as_bytes().to_vec(),
-            quals: "!!!!!!!".as_bytes().to_vec(),
+            bases: b"GATTACA".to_vec(),
+            quals: b"!!!!!!!".to_vec(),
             meth: None,
             read_qual: None,
             mismatch_positions: None,
@@ -775,7 +765,7 @@ mod tests {
             ref_end: 120,
         }];
 
-        let profiles = get_profiles(&reads, &snvs, &region);
+        let profiles = get_profiles(&reads.iter().collect_vec(), &snvs, &region);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0], vec![Some(false), Some(false)]);
     }

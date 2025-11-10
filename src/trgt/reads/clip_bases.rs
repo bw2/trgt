@@ -1,12 +1,12 @@
 use super::{
     cigar::{Cigar, CigarOp, CigarOpExt},
-    HiFiRead,
+    HiFiRead, LocusRead,
 };
 use crate::utils::handle_error_and_exit;
 
-/// Clip a specified number of bases from both sides of the readx
+/// Clip a specified number of bases from both sides of the read
 impl HiFiRead {
-    pub fn clip_bases(&self, left_len: usize, right_len: usize) -> Option<HiFiRead> {
+    pub fn clip_bases(&self, left_len: usize, right_len: usize) -> Option<LocusRead> {
         if left_len + right_len >= self.bases.len() {
             return None;
         }
@@ -20,40 +20,58 @@ impl HiFiRead {
             None
         };
 
-        let clipped_meth = match &self.meth {
-            Some(profile) => {
-                let (region_start, region_end) = (left_len, self.bases.len() - right_len);
-                let mut meth_iter = profile.iter();
+        let clipped_meth = clip_meth(&self.bases, self.meth.as_deref(), left_len, right_len);
 
-                let mut clipped_meth = Vec::new();
-                for index in 0..self.bases.len() - 1 {
-                    let dinuc = &self.bases[index..index + 2];
-                    let in_region = region_start <= index && index < region_end;
-                    if dinuc == b"CG" {
-                        if in_region {
-                            clipped_meth.push(*meth_iter.next().unwrap());
-                        } else {
-                            meth_iter.next();
-                        }
-                    }
-                }
-
-                Some(clipped_meth)
-            }
-            None => None,
-        };
-
-        Some(HiFiRead {
+        Some(LocusRead {
             bases: clipped_bases,
             quals: clipped_quals,
             meth: clipped_meth,
             cigar: clipped_cigar,
             id: self.id.clone(),
             mismatch_positions: self.mismatch_positions.clone(),
-
             ..*self
         })
     }
+}
+
+#[inline]
+pub fn clip_meth(
+    bases: &[u8],
+    meth_profile: Option<&[u8]>,
+    left_len: usize,
+    right_len: usize,
+) -> Option<Vec<u8>> {
+    debug_assert!(left_len <= bases.len());
+    debug_assert!(right_len <= bases.len());
+    debug_assert!(left_len + right_len <= bases.len());
+
+    let profile = meth_profile?;
+
+    let n = bases.len();
+    if n < 2 {
+        return Some(Vec::new());
+    }
+
+    let region_start = left_len;
+    let region_end = n - right_len;
+    let span = region_end - region_start;
+
+    let cap = (span >> 1).min(profile.len());
+    let mut clipped_meth = Vec::with_capacity(cap);
+
+    let mut meth_it = profile.iter().copied();
+    for (i, w) in bases.windows(2).enumerate() {
+        if w == b"CG" {
+            let m = meth_it
+                .next()
+                .expect("methylation profile shorter than CG count");
+            if i >= region_start && i < region_end {
+                clipped_meth.push(m);
+            }
+        }
+    }
+
+    Some(clipped_meth)
 }
 
 /// Clips CIGAR by a specified number of bases on left and right
@@ -64,7 +82,7 @@ fn clip_cigar(cigar: Cigar, mut left_len: usize, right_len: usize) -> Option<Cig
 
     let mut op_iter = cigar.ops.into_iter();
     let mut current_op = op_iter.next();
-    let mut ref_pos: usize = cigar.ref_pos as usize;
+    let mut ref_pos = cigar.ref_pos as usize;
 
     while left_len != 0 {
         let query_len = current_op.unwrap().get_query_len() as usize;
@@ -122,46 +140,27 @@ fn clip_cigar(cigar: Cigar, mut left_len: usize, right_len: usize) -> Option<Cig
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_htslib::bam::record::CigarString;
+    use crate::trgt::reads::test_utils::{make_cigar, make_read};
 
-    fn make_read(bases: &str, meths: Vec<u8>, cigar: Cigar) -> HiFiRead {
-        HiFiRead {
-            id: "read".to_string(),
-            is_reverse: false,
-            bases: bases.as_bytes().to_vec(),
-            quals: "(".repeat(bases.len()).as_bytes().to_vec(),
-            meth: Some(meths),
-            read_qual: None,
-            mismatch_positions: None,
-            cigar: Some(cigar),
-            hp_tag: None,
-            mapq: 60,
-            ref_start: 0,
-            ref_end: 0,
-        }
-    }
+    #[test]
+    fn test_clip_edge_cases() {
+        let cigar1 = make_cigar(10, "3=2D2=1X2=5I3=");
+        let read1 = make_read("CGCTCGTTAAATCACG", vec![10, 20, 30], cigar1);
 
-    fn make_cigar(ref_pos: i64, encoding: &str) -> Cigar {
-        let ops = CigarString::try_from(encoding).unwrap().to_vec();
-        Cigar { ref_pos, ops }
+        assert_eq!(read1.clip_bases(16, 0), None);
+        assert_eq!(read1.clip_bases(0, 16), None);
+        assert_eq!(read1.clip_bases(12, 4), None);
+
+        let cigar2 = make_cigar(10, "5S3=2D2=1X2=5I3=10S");
+        let read2 = make_read("AAAAACGCTCGTTAAATCACGAAAAAAAAAA", vec![10, 20, 30], cigar2);
+
+        assert_eq!(read2.clip_bases(31, 0), None);
+        assert_eq!(read2.clip_bases(0, 31), None);
+        assert_eq!(read2.clip_bases(30, 30), None);
     }
 
     #[test]
-    fn get_none_if_clip_whole_query() {
-        //                     /AAATC
-        //           CGC--TCGTTACG
-        // CCCCCCCCCCCGCGGTCATTACGCCCCCCCCCC
-        // |---10---||-----13----||---10---|
-        let cigar = make_cigar(10, "3=2D2=1X2=5I3=");
-        let read = make_read("CGCTCGTTAAATCACG", vec![10, 20, 30], cigar);
-
-        assert_eq!(read.clip_bases(16, 0), None);
-        assert_eq!(read.clip_bases(0, 16), None);
-        assert_eq!(read.clip_bases(12, 4), None);
-    }
-
-    #[test]
-    fn clip_from_left() {
+    fn test_clip_from_left() {
         let cigar = make_cigar(10, "5S3=2D2=1X2=5I3=10S");
         let read = make_read("AAAAACGCTCGTTAAATCACGAAAAAAAAAA", vec![10, 20, 30], cigar);
 
@@ -179,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn clip_from_right() {
+    fn test_clip_from_right() {
         let cigar = make_cigar(10, "5S3=2D2=1X2=5I3=10S");
         let read = make_read("AAAAACGCTCGTTAAATCACGAAAAAAAAAA", vec![10, 20, 30], cigar);
 
@@ -197,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn clip_from_both_sides() {
+    fn test_clip_from_both_sides() {
         let cigar = make_cigar(10, "5S3=2D2=1X2=5I3=10S");
         let read = make_read("AAAAACGCTCGTTAAATCACGAAAAAAAAAA", vec![10, 20, 30], cigar);
 
@@ -211,16 +210,6 @@ mod tests {
     }
 
     #[test]
-    fn get_none_if_clip_all_bases() {
-        let cigar = make_cigar(10, "5S3=2D2=1X2=5I3=10S");
-        let read = make_read("AAAAACGCTCGTTAAATCACGAAAAAAAAAA", vec![10, 20, 30], cigar);
-
-        assert_eq!(read.clip_bases(31, 0), None);
-        assert_eq!(read.clip_bases(0, 31), None);
-        assert_eq!(read.clip_bases(30, 30), None);
-    }
-
-    #[test]
     fn cigar_generated_even_if_clipped_alignment_has_no_query_len() {
         // It might be better to mark the read as unaligned in such cases (especially if IGV complains)
         let cigar = make_cigar(10, "5S3=2D2=1X2=5I3=10S");
@@ -229,5 +218,36 @@ mod tests {
         let cigar = make_cigar(20, "5I");
         let expected = make_read("AAATC", Vec::new(), cigar);
         assert_eq!(read.clip_bases(13, 13), Some(expected));
+    }
+
+    #[test]
+    fn test_methylation_clipping() {
+        let bases = b"ACGTACGT";
+        assert!(clip_meth(bases, None, 0, 0).is_none());
+
+        // Test clipping with CG sites
+        //         0 1 2 3 4 5 6 7
+        //         A C G C G T C G
+        // CG:       ^   ^     ^
+        // indices:  1   3     6
+        let bases = b"ACGCGTCG";
+        let profile = [1u8, 3u8, 6u8];
+
+        let clipped = clip_meth(bases, Some(&profile), 2, 1).unwrap();
+        assert_eq!(clipped, vec![3, 6]);
+
+        let clipped = clip_meth(bases, Some(&profile), 0, bases.len() - 3).unwrap();
+        assert_eq!(clipped, vec![1]);
+
+        let clipped = clip_meth(bases, Some(&profile), 2, 3).unwrap();
+        assert_eq!(clipped, vec![3]);
+
+        let clipped = clip_meth(bases, Some(&profile), bases.len(), 0).unwrap();
+        assert!(clipped.is_empty());
+
+        let bases = b"AAAAAA";
+        let profile = [];
+        let clipped = clip_meth(bases, Some(&profile), 0, 0).unwrap();
+        assert!(clipped.is_empty());
     }
 }

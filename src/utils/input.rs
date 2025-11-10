@@ -1,8 +1,7 @@
 use super::read::{Beta, Betas, Read};
 use crate::{
     trgt::locus::create_chrom_lookup,
-    utils::locus::Locus,
-    utils::{open_bam_reader, open_vcf_reader, Result},
+    utils::{locus::Locus, open_bam_reader, open_vcf_reader, InputSource, Result},
 };
 use itertools::Itertools;
 use rust_htslib::{
@@ -10,7 +9,7 @@ use rust_htslib::{
     bcf::{record::GenotypeAllele::UnphasedMissing, Read as BcfRead, Record},
     faidx,
 };
-use std::{collections::HashSet, io::BufRead, path::Path, str};
+use std::{collections::HashSet, io::BufRead, str};
 
 #[derive(Debug)]
 pub struct Span {
@@ -19,10 +18,9 @@ pub struct Span {
     pub end: usize,
 }
 
-pub fn get_alleles(vcf_path: &Path, locus: &Locus) -> Result<Vec<String>> {
-    let mut vcf = open_vcf_reader(vcf_path)?;
+pub fn get_alleles(vcf_src: &InputSource, locus: &Locus) -> Result<Vec<Vec<u8>>> {
+    let mut vcf = open_vcf_reader(vcf_src)?;
     let mut record = vcf.empty_record();
-
     while let Some(result) = vcf.read(&mut record) {
         result.map_err(|e| e.to_string())?;
 
@@ -71,11 +69,11 @@ where
 }
 
 pub fn get_reads(
-    bam_path: &Path,
+    reads_source: &InputSource,
     locus: &Locus,
     max_allele_reads: Option<usize>,
 ) -> Result<Vec<Read>> {
-    let mut bam = open_bam_reader(bam_path, 1)?;
+    let mut bam = open_bam_reader(reads_source, 1)?;
 
     // This assumes that TRGT outputs flanks shorter than 1Kbps in length. We may want
     // to implement a more flexible mechanism for handling flank lengths here and elsewhere.
@@ -96,7 +94,7 @@ pub fn get_reads(
     while let Some(result) = bam.read(&mut read) {
         result.map_err(|e| e.to_string())?;
         let read_name = std::str::from_utf8(read.qname()).unwrap().to_owned();
-        let seq = str::from_utf8(&read.seq().as_bytes()).unwrap().to_string();
+        let seq = read.seq().as_bytes().to_vec();
 
         let trid = match read.aux(b"TR") {
             Ok(Aux::String(value)) => value.to_string(),
@@ -196,7 +194,7 @@ pub fn get_reads(
     Ok(seqs)
 }
 
-fn get_allele_seqs(locus: &Locus, record: &Record) -> Vec<String> {
+fn get_allele_seqs(locus: &Locus, record: &Record) -> Vec<Vec<u8>> {
     let lf = &locus.left_flank;
     let rf = &locus.right_flank;
     let genotype = record.genotypes().unwrap().get(0);
@@ -216,25 +214,26 @@ fn get_allele_seqs(locus: &Locus, record: &Record) -> Vec<String> {
         .into_iter()
         .map(|allele| {
             let allele_seq = allele.iter().skip(1).copied().collect_vec();
-            let allele_seq = str::from_utf8(&allele_seq).unwrap();
-            lf.clone() + allele_seq + &rf.clone()
+            let mut result = lf.clone();
+            result.extend_from_slice(&allele_seq);
+            result.extend_from_slice(rf);
+            result
         })
         .collect_vec();
 
     alleles
 }
 
-fn parse_meth(read: &bam::Record, seq: &str) -> Result<Betas> {
-    let values = match read.aux(b"MC") {
+fn parse_meth(read: &bam::Record, seq: &[u8]) -> Result<Betas> {
+    let values: Vec<u8> = match read.aux(b"MC") {
         Ok(Aux::ArrayU8(value)) => {
-            if !value.is_empty() {
-                value.iter().collect::<Vec<u8>>()
-            } else {
+            if value.is_empty() {
                 return Ok(Vec::new());
             }
+            value.iter().collect::<Vec<u8>>()
         }
         Ok(other) => {
-            let read_name = String::from_utf8(read.qname().to_vec()).unwrap();
+            let read_name = std::str::from_utf8(read.qname()).unwrap_or("<non-utf8>");
             return Err(format!(
                 "Read '{}' has MC tag with unexpected type: {:?}",
                 read_name, other
@@ -246,10 +245,10 @@ fn parse_meth(read: &bam::Record, seq: &str) -> Result<Betas> {
     let mut betas = Vec::new();
     let mut cpg_count = 0;
     for pos in 0..seq.len() {
-        let is_cpg = pos + 1 < seq.len() && &seq[pos..pos + 2] == "CG";
+        let is_cpg = pos + 1 < seq.len() && &seq[pos..pos + 2] == b"CG";
         if is_cpg {
             if cpg_count == values.len() {
-                let read_name = String::from_utf8(read.qname().to_vec()).unwrap();
+                let read_name = std::str::from_utf8(read.qname()).unwrap_or("<non-utf8>");
                 return Err(format!("Read '{}' has a malformed MC tag", read_name));
             }
             let level = values[cpg_count] as f64 / 255.0;
@@ -260,11 +259,10 @@ fn parse_meth(read: &bam::Record, seq: &str) -> Result<Betas> {
     }
 
     let all_cpgs_present = cpg_count == values.len();
-    let last_cpg_split =
-        seq.bytes().last().unwrap_or(b'X') == b'C' && cpg_count + 1 == values.len();
+    let last_cpg_split = seq.last().unwrap_or(&b'X') == &b'C' && cpg_count + 1 == values.len();
 
     if !(all_cpgs_present || last_cpg_split) {
-        let read_name = String::from_utf8(read.qname().to_vec()).unwrap();
+        let read_name = std::str::from_utf8(read.qname()).unwrap_or("<non-utf8>");
         return Err(format!("Read '{}' has a malformed MC tag", read_name));
     }
 

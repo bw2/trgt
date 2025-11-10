@@ -6,8 +6,8 @@ use crate::trgt::{
     writers::{BamWriter, VcfWriter},
 };
 use crate::utils::{
-    create_writer, get_bam_header, get_sample_name, is_bam_mapped, readers::create_bam_reader,
-    Karyotype, Result, TrgtScoring,
+    create_writer, get_bam_header, get_sample_name, is_bam_mapped,
+    readers::open_genotyper_bam_reader, InputSource, Karyotype, Result, TrgtScoring,
 };
 use crate::wfaligner::{AlignmentScope, Heuristic, MemoryModel, WFAligner};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -18,7 +18,6 @@ use rayon::{
 use rust_htslib::bam;
 use std::{
     cell::RefCell,
-    path::Path,
     sync::Arc,
     thread::{self, JoinHandle},
 };
@@ -76,14 +75,14 @@ pub fn trgt(args: GenotypeArgs) -> Result<()> {
 
     let karyotype = Karyotype::new(&args.karyotype)?;
 
-    let bam_header = get_bam_header(&args.reads_path)?;
+    let bam_header = get_bam_header(&args.reads_src)?;
     if !is_bam_mapped(&bam_header) {
         return Err("Input BAM is not mapped".into());
     }
 
     let sample_name = args
         .sample_name
-        .unwrap_or(get_sample_name(&args.reads_path, &bam_header)?);
+        .unwrap_or(get_sample_name(&args.reads_src, &bam_header)?);
 
     let mut vcf_writer = create_writer(&args.output_prefix, "vcf.gz", |path| {
         VcfWriter::new(path, &sample_name, &bam_header)
@@ -132,11 +131,11 @@ pub fn trgt(args: GenotypeArgs) -> Result<()> {
 
     // Stage 1: Grouping loci into LocusGroup's (IO: Read repeat catalog and reference genome)
     let locus_grouper_thread = {
-        let genome_path = args.genome_path.clone();
+        let genome_src = args.genome_src.clone();
         thread::spawn(move || {
             stream_locus_groups_into_channel(
-                &args.repeats_path,
-                &genome_path,
+                &args.repeats_src,
+                &genome_src,
                 args.flank_len,
                 args.genotyper,
                 &karyotype,
@@ -149,8 +148,8 @@ pub fn trgt(args: GenotypeArgs) -> Result<()> {
 
     // Stage 2: Populate LocusGroup with reads (IO: Read BAM file)
     let fetcher_threads = spawn_fetcher_threads(
-        &args.reads_path,
-        &args.genome_path,
+        &args.reads_src,
+        &args.genome_src,
         num_fetcher_threads,
         args.decompression_threads,
         &workflow_params,
@@ -187,27 +186,26 @@ pub fn trgt(args: GenotypeArgs) -> Result<()> {
             );
     });
 
-    log::debug!("Analysis complete. Shutting down pipeline threads...");
-
     match writer_thread.join() {
         Ok(_) => log::trace!("Writer thread has finished."),
-        Err(_) => log::error!("Writer thread panicked."),
+        Err(_) => return Err("Writer thread panicked.".into()),
     }
 
     match locus_grouper_thread.join() {
         Ok(Ok(_)) => log::trace!("Locus grouper thread has finished."),
-        Ok(Err(e)) => log::error!("Locus grouping stage failed: {}", e),
-        Err(_) => log::error!("Locus grouper thread panicked."),
+        Ok(Err(e)) => return Err(format!("Locus grouping stage failed: {}", e)),
+        Err(_) => return Err("Locus grouper thread panicked.".into()),
     }
 
     for handle in fetcher_threads {
         match handle.join() {
             Ok(_) => {}
-            Err(_) => log::error!("Fetcher thread panicked."),
+            Err(_) => return Err("Fetcher thread panicked.".into()),
         }
     }
     log::trace!("All fetcher threads have finished.");
-    log::debug!("All pipeline threads shut down successfully.");
+
+    log::debug!("Analysis complete. All pipeline threads shut down successfully.");
 
     Ok(())
 }
@@ -243,8 +241,8 @@ fn run_fetcher_thread(
 }
 
 fn spawn_fetcher_threads(
-    reads_path: &Path,
-    genome_path: &Path,
+    reads_source: &InputSource,
+    genome_src: &InputSource,
     num_fetcher_threads: usize,
     decompression_threads: usize,
     workflow_params: &Arc<Params>,
@@ -257,32 +255,39 @@ fn spawn_fetcher_threads(
         num_fetcher_threads
     );
     for i in 0..num_fetcher_threads {
-        let reads_path = reads_path.to_path_buf();
-        let genome_path = genome_path.to_path_buf();
+        let reads_source = reads_source.clone();
+        let genome_src = genome_src.clone();
         let group_receiver = group_receiver.clone();
         let populated_locus_sender = populated_locus_sender.clone();
         let workflow_params = workflow_params.clone();
 
-        let handle = thread::Builder::new()
+        match thread::Builder::new()
             .name(format!("fetcher-{}", i))
             .spawn(move || {
-                let bam_reader =
-                    match create_bam_reader(&reads_path, &genome_path, decompression_threads) {
-                        Ok(reader) => reader,
-                        Err(e) => {
-                            log::error!("Fetcher thread failed to initialize: {}", e);
-                            return;
-                        }
-                    };
+                let bam_reader = match open_genotyper_bam_reader(
+                    &reads_source,
+                    &genome_src,
+                    decompression_threads,
+                ) {
+                    Ok(reader) => reader,
+                    Err(e) => {
+                        log::error!("Fetcher thread failed to initialize: {}", e);
+                        return;
+                    }
+                };
                 run_fetcher_thread(
                     bam_reader,
                     group_receiver,
                     populated_locus_sender,
                     workflow_params,
                 );
-            })
-            .unwrap();
-        threads.push(handle);
+            }) {
+            Ok(handle) => threads.push(handle),
+            Err(e) => {
+                log::error!("Failed to spawn fetcher-{}: {}", i, e);
+                break;
+            }
+        }
     }
     threads
 }

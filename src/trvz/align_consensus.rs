@@ -6,20 +6,14 @@ use itertools::Itertools;
 
 /// Aligns a given allele to a perfect repeat as specified by the locus
 /// definition
-pub fn align_consensus(locus: &Locus, consensus: &str) -> Vec<AlignSeg> {
+pub fn align_consensus(locus: &Locus, consensus: &[u8]) -> Vec<AlignSeg> {
     let mut align = vec![AlignSeg {
         width: locus.left_flank.len(),
         op: AlignOp::Match,
         seg_type: SegType::LeftFlank,
     }];
-
-    let motifs = locus
-        .motifs
-        .iter()
-        .map(|m| m.as_bytes().to_vec())
-        .collect_vec();
     let query = &consensus[locus.left_flank.len()..consensus.len() - locus.right_flank.len()];
-    let query_align = align_motifs(&motifs, query);
+    let query_align = align_motifs(&locus.motifs, query);
 
     align.extend(query_align);
     align.push(AlignSeg {
@@ -32,21 +26,21 @@ pub fn align_consensus(locus: &Locus, consensus: &str) -> Vec<AlignSeg> {
 
 /// Aligns the given sequence to a perfect repeat composed of the given set of
 /// motifs
-pub fn align_motifs(motifs: &[Vec<u8>], seq: &str) -> Vec<AlignSeg> {
+pub fn align_motifs(motifs: &[Vec<u8>], seq: &[u8]) -> Vec<AlignSeg> {
     if seq.is_empty() {
         return Vec::new();
     }
 
     let hmm = build_hmm(motifs);
     let states = hmm.label(seq);
-    let states = remove_imperfect_motifs(&hmm, motifs, &states, seq.as_bytes(), 6);
+    let states = remove_imperfect_motifs(&hmm, motifs, &states, seq, 6);
     let motif_spans = hmm.label_motifs(&states);
     let mut motif_by_base = vec![motifs.len(); seq.len()];
     for span in motif_spans {
         motif_by_base[span.start..span.end].fill(span.motif_index);
     }
 
-    let events = get_events(&hmm, motifs, &states, seq.as_bytes());
+    let events = get_events(&hmm, motifs, &states, seq);
     let mut align = Vec::new();
     let mut bound_events = Vec::new();
     let mut base_pos = 0;

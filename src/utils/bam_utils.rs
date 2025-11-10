@@ -1,10 +1,9 @@
-use crate::utils::Result;
+use crate::utils::{open_bam_reader, InputSource, Result};
 use rust_htslib::bam::{self, Read};
-use std::{collections::HashSet, path::Path};
+use std::collections::HashSet;
 
-pub fn get_bam_header(bam_path: &Path) -> Result<bam::Header> {
-    let bam = bam::IndexedReader::from_path(bam_path)
-        .map_err(|e| format!("Failed to create bam reader: {}", e))?;
+pub fn get_bam_header(src: &InputSource) -> Result<bam::Header> {
+    let bam = open_bam_reader(src, 1)?;
     Ok(bam::Header::from_template(bam.header()))
 }
 
@@ -19,7 +18,7 @@ pub fn is_bam_mapped(bam_header: &bam::Header) -> bool {
     false
 }
 
-pub fn get_sample_name(reads_path: &Path, bam_header: &bam::Header) -> Result<String> {
+pub fn get_sample_name(reads_path: &InputSource, bam_header: &bam::Header) -> Result<String> {
     let header_hashmap = bam_header.to_hashmap();
     let mut sample_names = HashSet::new();
 
@@ -39,9 +38,7 @@ pub fn get_sample_name(reads_path: &Path, bam_header: &bam::Header) -> Result<St
 
     let sample = reads_path
         .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or("Invalid reads file name")?
-        .to_string();
+        .ok_or_else(|| "Invalid reads input; cannot infer sample name from path/URL".to_string())?;
 
     Ok(sample)
 }

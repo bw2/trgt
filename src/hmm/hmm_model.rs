@@ -141,14 +141,14 @@ impl Hmm {
         traceback_states
     }
 
-    pub fn label(&self, query: &str) -> Vec<usize> {
+    pub fn label(&self, query: &[u8]) -> Vec<usize> {
         if query.is_empty() {
             return Vec::new();
         }
-        let query = "#"
-            .bytes()
-            .chain(query.bytes().chain("#".bytes()))
-            .map(encode_base)
+        let query = b"#"
+            .iter()
+            .chain(query.iter().chain(b"#".iter()))
+            .map(|&b| encode_base(b))
             .collect_vec();
 
         let (_scores, states) = self.generate_mats(&query);

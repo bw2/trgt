@@ -1,13 +1,15 @@
 use crate::utils::Result;
-use rust_htslib::bcf::{self, header::HeaderView, Header, HeaderRecord, Read};
+use rust_htslib::{
+    bcf::{self, header::HeaderView, Header, HeaderRecord, Read},
+    bgzf,
+};
 use semver::Version;
 use std::{
     collections::{HashMap, HashSet},
-    io::{BufRead, BufReader, Seek},
+    fs::File,
+    io::{BufRead, BufReader, Read as ReadIo},
     path::{Path, PathBuf},
 };
-
-const GZIP_MAGIC_NUMBER: [u8; 2] = [0x1f, 0x8b];
 
 fn add_extension(path: &Path, ext: &str) -> PathBuf {
     let mut file_name = path.file_name().unwrap().to_os_string();
@@ -16,37 +18,54 @@ fn add_extension(path: &Path, ext: &str) -> PathBuf {
     path.with_file_name(file_name)
 }
 
-fn is_indexed(file: &Path) -> bool {
+fn is_indexed_local(file: &Path) -> bool {
     let csi_index = add_extension(file, "csi");
     let tbi_index = add_extension(file, "tbi");
     csi_index.exists() || tbi_index.exists()
 }
 
-fn validate_vcf_file(file: &Path) -> Result<()> {
-    let mut fp = std::fs::File::open(file).map_err(|e| format!("Failed to open file: {}", e))?;
-    let mut buffer = [0; 2];
-    std::io::Read::read_exact(&mut fp, &mut buffer)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+fn validate_indexed_vcf(file: &Path) -> Result<()> {
+    if !is_indexed_local(file) {
+        return Err(format!(
+            "VCF file {} is not indexed (.tbi or .csi not found)",
+            file.display()
+        ));
+    }
 
+    let mut f =
+        File::open(file).map_err(|e| format!("Failed to open file {}: {}", file.display(), e))?;
+    let mut buffer = [0u8; 2];
+    f.read_exact(&mut buffer)
+        .map_err(|e| format!("Failed to read from {}: {}", file.display(), e))?;
+
+    const GZIP_MAGIC_NUMBER: [u8; 2] = [0x1f, 0x8b];
     if buffer != GZIP_MAGIC_NUMBER {
-        return Err(format!("File {} is not gzip compressed", file.display()));
+        return Err(format!(
+            "File {} does not appear to be gzip/bgzip compressed",
+            file.display()
+        ));
     }
 
-    fp.rewind()
-        .map_err(|e| format!("Failed to rewind file: {}", e))?;
-
-    let gz = flate2::read::GzDecoder::new(fp);
-    let mut reader = BufReader::new(gz);
-    let mut first_line = String::new();
-    reader
-        .read_line(&mut first_line)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
-
-    if !first_line.trim().starts_with("##fileformat=VCFv") {
-        return Err(format!("File {} is not a valid VCF file", file.display()));
+    let mut bgzf_reader = BufReader::new(bgzf::Reader::from_path(file).unwrap());
+    let mut first_line: String = String::new();
+    match bgzf_reader.read_line(&mut first_line) {
+        Ok(0) => Err(format!("File {} is empty", file.display())),
+        Ok(_) => {
+            if !first_line.starts_with("##fileformat=VCFv") {
+                Err(format!(
+                    "File {} is not a valid VCF file (missing '##fileformat' header)",
+                    file.display()
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        Err(e) => Err(format!(
+            "Failed to decompress and read from {}: {}. The file may be corrupted.",
+            file.display(),
+            e
+        )),
     }
-
-    Ok(())
 }
 
 pub struct VcfReader {
@@ -63,11 +82,7 @@ impl VcfReader {
     pub fn new(file: PathBuf, index: usize) -> Result<Self> {
         log::debug!("Start opening VCF {:?}", &file);
 
-        validate_vcf_file(&file).map_err(|e| format!("Error validating VCF: {}", e))?;
-
-        if !is_indexed(&file) {
-            return Err(format!("VCF file {} is not indexed", file.display()));
-        }
+        validate_indexed_vcf(&file)?;
 
         let reader = bcf::IndexedReader::from_path(&file)
             .map_err(|e| format!("Failed to open VCF file {}: {}", file.display(), e))?;

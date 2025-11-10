@@ -1,6 +1,6 @@
 use super::spans::Span;
 
-pub fn count_motifs(motifs: &[String], labels: &Vec<Span>) -> Vec<usize> {
+pub fn count_motifs(motifs: &[Vec<u8>], labels: &Vec<Span>) -> Vec<usize> {
     let mut motif_counts = vec![0; motifs.len()];
     for span in labels {
         motif_counts[span.motif_index] += 1;
@@ -26,17 +26,23 @@ pub fn collapse_labels(spans: Vec<Span>) -> Vec<Span> {
     collapsed
 }
 
-pub fn replace_invalid_bases(seq: &str, allowed_bases: &[char]) -> String {
-    seq.as_bytes()
-        .iter()
-        .enumerate()
-        .map(|(index, base)| {
-            let base = *base as char;
-            if allowed_bases.contains(&base) {
-                base
-            } else {
-                allowed_bases[index % allowed_bases.len()]
-            }
-        })
-        .collect()
+#[inline]
+pub fn replace_invalid_bases_inplace(seq: &mut [u8], allowed: &[u8]) {
+    let mut is_allowed = [false; 256];
+    for &b in allowed {
+        is_allowed[b as usize] = true;
+    }
+    let n = allowed.len();
+    for (i, b) in seq.iter_mut().enumerate() {
+        if !is_allowed[*b as usize] {
+            *b = allowed[i % n];
+        }
+    }
+}
+
+#[inline]
+pub fn replace_invalid_bases(seq: &[u8], allowed: &[u8]) -> Vec<u8> {
+    let mut v = seq.to_vec();
+    replace_invalid_bases_inplace(&mut v, allowed);
+    v
 }

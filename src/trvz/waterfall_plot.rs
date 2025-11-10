@@ -1,23 +1,15 @@
 use super::align::Align;
-use super::params::get_meth_colors;
-use super::params::Color;
-use super::params::ColorMap;
-use super::params::PlotParams;
+use super::params::{get_meth_colors, Color, ColorMap, PlotParams};
 use super::scale::get_scale;
-use crate::trvz::align::AlignOp;
-use crate::trvz::align::AlignSeg;
-use crate::trvz::align::SegType;
-use crate::trvz::align_consensus::align_motifs;
-use crate::utils::locus::Locus;
-use crate::utils::read::project_betas;
-use crate::utils::read::Beta;
-use crate::utils::read::Betas;
-use crate::utils::read::Read;
-use crate::wfaligner::AlignmentScope;
-use crate::wfaligner::MemoryModel;
-use crate::wfaligner::WFAligner;
-use crate::wfaligner::WfaAlign;
-use crate::wfaligner::WfaOp;
+use crate::trvz::{
+    align::{AlignOp, AlignSeg, SegType},
+    align_consensus::align_motifs,
+};
+use crate::utils::{
+    locus::Locus,
+    read::{project_betas, Beta, Betas, Read},
+};
+use crate::wfaligner::{AlignmentScope, MemoryModel, WFAligner, WfaAlign, WfaOp};
 use itertools::Itertools;
 use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape};
 
@@ -42,23 +34,18 @@ pub fn plot_waterfall(
 }
 
 fn align(locus: &Locus, longest_read: usize, read: &Read) -> (Align, Vec<Beta>) {
-    let lf_ref = locus.left_flank.as_bytes();
-    let rf_ref = locus.right_flank.as_bytes();
+    let lf_ref = &locus.left_flank;
+    let rf_ref = &locus.right_flank;
 
-    let lf_read = &read.seq.as_bytes()[..lf_ref.len()];
-    let rf_read = &read.seq.as_bytes()[read.seq.len() - locus.right_flank.len()..];
+    let lf_read = &read.seq[..lf_ref.len()];
+    let rf_read = &read.seq[read.seq.len() - locus.right_flank.len()..];
 
     let lf_wfa_align = get_flank_align(lf_ref, lf_read);
     let mut align = convert(&lf_wfa_align, SegType::LeftFlank);
-    // Placeholder for TR alignment
     let tr = &read.seq[locus.left_flank.len()..read.seq.len() - locus.right_flank.len()];
-    let motif_encoding = &locus
-        .motifs
-        .iter()
-        .map(|m| m.as_bytes().to_vec())
-        .collect_vec();
-    let motif_aligns = align_motifs(motif_encoding, tr);
+    let motif_aligns = align_motifs(&locus.motifs, tr);
     align.extend(motif_aligns);
+
     // Add deletion that lines up right flanks
     let deletion_width = longest_read.saturating_sub(read.seq.len());
     // prevents adding a 0-width segment
@@ -204,6 +191,7 @@ pub fn plot(
     let pipe = get_scale(xpos, ypos, params.pipe_height, &reads.last().unwrap().0);
     pipes.push(pipe);
     ypos += 4;
+
     for (align, betas) in reads {
         let (colors, betas) = if what_to_show == "meth" {
             (get_meth_colors(&locus.motifs), betas.clone())
@@ -219,7 +207,7 @@ pub fn plot(
     if what_to_show == "motifs" {
         for (index, motif) in locus.motifs.iter().enumerate() {
             let color = params.colors.get(&SegType::Tr(index)).unwrap().to_string();
-            labels.push((motif.clone(), color));
+            labels.push((std::str::from_utf8(motif).unwrap().to_string(), color));
         }
     } else {
         labels = vec![

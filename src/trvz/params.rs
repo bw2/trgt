@@ -9,7 +9,7 @@ pub struct PlotParams {
     pub pipe_pad: u32,
 }
 
-pub fn pick_params(motifs: &[String], is_squished: bool) -> PlotParams {
+pub fn pick_params(motifs: &[Vec<u8>], is_squished: bool) -> PlotParams {
     let colors = pick_colors(motifs);
 
     if !is_squished {
@@ -27,7 +27,7 @@ pub fn pick_params(motifs: &[String], is_squished: bool) -> PlotParams {
     }
 }
 
-fn pick_colors(motifs: &[String]) -> ColorMap {
+fn pick_colors(motifs: &[Vec<u8>]) -> ColorMap {
     let tr_colors = [
         Color::Blue,
         Color::Purple,
@@ -54,7 +54,7 @@ fn pick_colors(motifs: &[String]) -> ColorMap {
     colors
 }
 
-pub fn get_meth_colors(motifs: &[String]) -> ColorMap {
+pub fn get_meth_colors(motifs: &[Vec<u8>]) -> ColorMap {
     let mut colors = HashMap::new();
     colors.insert(SegType::LeftFlank, Color::Teal);
     colors.insert(SegType::RightFlank, Color::Teal);

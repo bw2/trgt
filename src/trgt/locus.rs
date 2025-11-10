@@ -1,23 +1,24 @@
-use crate::trgt::{locus_group::LocusGroup, reads::HiFiRead};
+use crate::trgt::{locus_group::LocusGroup, reads::LocusRead};
 use crate::utils::{
-    open_catalog_reader, open_genome_reader, GenomicRegion, Genotyper, Karyotype, Ploidy, Result,
+    open_catalog_reader, open_genome_reader, GenomicRegion, Genotyper, InputSource, Karyotype,
+    Ploidy, Result,
 };
 use crossbeam_channel::Sender;
 use rust_htslib::faidx;
-use std::{collections::HashMap, io::BufRead, path::Path};
+use std::{collections::HashMap, io::BufRead};
 
 #[derive(Debug)]
 pub struct Locus {
     pub id: String,
-    pub left_flank: String,
-    pub tr: String,
-    pub right_flank: String,
+    pub left_flank: Vec<u8>,
+    pub tr: Vec<u8>,
+    pub right_flank: Vec<u8>,
     pub region: GenomicRegion,
-    pub motifs: Vec<String>,
+    pub motifs: Vec<Vec<u8>>,
     pub struc: String,
     pub ploidy: Ploidy,
     pub genotyper: Genotyper,
-    pub reads: Vec<HiFiRead>,
+    pub reads: Vec<LocusRead>,
 }
 
 impl Locus {
@@ -54,8 +55,9 @@ impl Locus {
         let id = get_field(&fields, "ID")?;
         let motifs = get_field(&fields, "MOTIFS")?
             .split(',')
-            .map(|s| s.to_string())
+            .map(|s| s.as_bytes().to_vec())
             .collect();
+        // TODO: This should not be mandatory anymore
         let struc = get_field(&fields, "STRUC")?;
 
         let (left_flank, tr, right_flank) = get_tr_and_flanks(genome_reader, &region, flank_len)?;
@@ -94,8 +96,8 @@ pub fn create_chrom_lookup(reader: &faidx::Reader) -> Result<HashMap<String, u32
 
 #[allow(clippy::too_many_arguments)]
 pub fn stream_locus_groups_into_channel(
-    repeats_path: &Path,
-    genome_path: &Path,
+    repeats_src: &InputSource,
+    genome_src: &InputSource,
     flank_len: usize,
     genotyper: Genotyper,
     karyotype: &Karyotype,
@@ -103,8 +105,8 @@ pub fn stream_locus_groups_into_channel(
     max_group_span: u32,
     max_group_size: usize,
 ) -> Result<()> {
-    let mut catalog_reader = open_catalog_reader(repeats_path).map_err(|e| e.to_string())?;
-    let genome_reader = open_genome_reader(genome_path).map_err(|e| e.to_string())?;
+    let mut catalog_reader = open_catalog_reader(repeats_src).map_err(|e| e.to_string())?;
+    let genome_reader = open_genome_reader(genome_src).map_err(|e| e.to_string())?;
     let chrom_lookup = create_chrom_lookup(&genome_reader).map_err(|e| e.to_string())?;
 
     let mut current_group: Option<LocusGroup> = None;
@@ -166,27 +168,28 @@ pub fn get_tr_and_flanks(
     genome: &faidx::Reader,
     region: &GenomicRegion,
     flank_len: usize,
-) -> Result<(String, String, String)> {
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let full_start = region.start as usize - flank_len;
     let full_end = region.end as usize + flank_len - 1;
 
-    let full_seq = genome
-        .fetch_seq_string(&region.contig, full_start, full_end)
+    let mut full_seq = genome
+        .fetch_seq(&region.contig, full_start, full_end)
         .map_err(|e| {
             format!(
                 "Error fetching sequence for region {}:{}-{}: {}",
                 &region.contig, full_start, full_end, e
             )
-        })?
-        .to_uppercase();
+        })?;
+
+    full_seq.make_ascii_uppercase();
 
     let tr_start = flank_len;
     let tr_end = flank_len + (region.end - region.start) as usize;
     let right_flank_start = tr_end;
 
-    let left_flank = full_seq[..tr_start].to_string();
-    let tr = full_seq[tr_start..tr_end].to_string();
-    let right_flank = full_seq[right_flank_start..].to_string();
+    let left_flank = full_seq[..tr_start].to_vec();
+    let tr = full_seq[tr_start..tr_end].to_vec();
+    let right_flank = full_seq[right_flank_start..].to_vec();
 
     Ok((left_flank, tr, right_flank))
 }

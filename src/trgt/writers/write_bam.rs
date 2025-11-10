@@ -1,8 +1,9 @@
 //! Defines the `BamWriter` struct and associated functions for creating and writing spanning reads to a BAM file.
 //!
 use crate::cli;
-use crate::trgt::reads::extract_mismatch_offsets;
-use crate::trgt::{locus::Locus, workflows::LocusResult};
+use crate::trgt::{
+    locus::Locus, reads::extract_mismatch_offsets, reads::AlleleAssign, workflows::LocusResult,
+};
 use crate::utils::Result;
 use rust_htslib::bam::{
     self,
@@ -66,6 +67,24 @@ impl BamWriter {
         header
     }
 
+    #[inline]
+    fn assign_to_i32(assign: AlleleAssign) -> i32 {
+        match assign {
+            AlleleAssign::A0 => 0,
+            AlleleAssign::A1 => 1,
+            AlleleAssign::Both => 2,
+            AlleleAssign::None => -1,
+        }
+    }
+
+    #[inline]
+    fn contig_tid(&self, contig: &str) -> i32 {
+        self.writer
+            .header()
+            .tid(contig.as_bytes())
+            .expect("unknown contig") as i32
+    }
+
     /// Writes the spanning reads to the BAM file from the genotyping results for a specific locus.
     ///
     /// # Arguments
@@ -73,11 +92,14 @@ impl BamWriter {
     /// * `locus` - `Locus` struct containing locus information.
     /// * `results` - `LocusResult` struct containing genotyping results.
     pub fn write(&mut self, locus: &Locus, results: &LocusResult) {
-        let num_reads = results.reads.len();
-        for index in 0..num_reads {
-            let read = &results.reads[index];
-            let classification = results.classification[index];
-            let span = &results.tr_spans[index];
+        if results.spanning_reads.is_empty() {
+            return;
+        }
+
+        let tid = self.contig_tid(&locus.region.contig);
+        for sr in &results.spanning_reads {
+            let read = &sr.read;
+            let span = &sr.span;
 
             if span.0 < self.flank_len || read.bases.len() < span.1 + self.flank_len {
                 log::error!("Read {} has unexpectedly short flanks", read.id);
@@ -86,19 +108,18 @@ impl BamWriter {
 
             let left_clip_len = span.0 - self.flank_len;
             let right_clip_len = read.bases.len() - span.1 - self.flank_len;
-            let clipped_read = read.clip_bases(left_clip_len, right_clip_len);
-            if clipped_read.is_none() {
-                log::error!("Read {} has unexpectedly short flanks", read.id);
-                continue;
-            }
-            let read = clipped_read.unwrap();
 
-            let contig = locus.region.contig.as_bytes();
-            let contig_id = self.writer.header().tid(contig).unwrap();
+            let read = match read.clip_bases(left_clip_len, right_clip_len) {
+                Some(r) => r,
+                None => {
+                    log::error!("Read {} has unexpectedly short flanks", read.id);
+                    continue;
+                }
+            };
 
             let mut rec = bam::Record::new();
+            rec.set_tid(tid);
 
-            rec.set_tid(contig_id as i32);
             if read.is_reverse {
                 rec.set_reverse();
             }
@@ -112,6 +133,7 @@ impl BamWriter {
                     &read.quals,
                 );
                 rec.set_mapq(read.mapq);
+                rec.unset_unmapped();
             } else {
                 rec.set_pos(locus.region.start as i64);
                 rec.set(read.id.as_bytes(), None, &read.bases, &read.quals);
@@ -126,8 +148,6 @@ impl BamWriter {
                 rec.push_aux(b"MC", Aux::ArrayU8(meth.into())).unwrap();
             }
 
-            let start_offset = (read.ref_start - locus.region.start as i64) as i32;
-            let end_offset = (read.ref_end - locus.region.end as i64) as i32;
             let mismatch_offsets = read.mismatch_positions.as_ref().map(|positions| {
                 extract_mismatch_offsets(positions, locus.region.start, locus.region.end)
             });
@@ -141,9 +161,14 @@ impl BamWriter {
                 rec.push_aux(b"HP", Aux::U8(hp)).unwrap();
             }
 
+            let start_offset = (read.ref_start - locus.region.start as i64) as i32;
+            let end_offset = (read.ref_end - locus.region.end as i64) as i32;
+
             rec.push_aux(b"SO", Aux::I32(start_offset)).unwrap();
             rec.push_aux(b"EO", Aux::I32(end_offset)).unwrap();
-            rec.push_aux(b"AL", Aux::I32(classification)).unwrap();
+
+            rec.push_aux(b"AL", Aux::I32(Self::assign_to_i32(sr.assign)))
+                .unwrap();
 
             rec.push_aux(
                 b"FL",

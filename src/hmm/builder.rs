@@ -209,7 +209,7 @@ mod tests {
     fn annotate_two_perfect_motif_runs() {
         let motifs = vec!["CAG".as_bytes().to_vec(), "A".as_bytes().to_vec()];
         let hmm = build_hmm(&motifs);
-        let labels = hmm.label_motifs(&hmm.label("CAGCAGCAGCAGAAAAA"));
+        let labels = hmm.label_motifs(&hmm.label(b"CAGCAGCAGCAGAAAAA"));
         let expected = vec![(0, 12, 0), (12, 17, 1)];
 
         assert_eq!(summarize(&labels), expected);
@@ -220,7 +220,7 @@ mod tests {
         let motifs = vec!["CAG".as_bytes().to_vec(), "A".as_bytes().to_vec()];
         let hmm = build_hmm(&motifs);
         let query = "CAGCAGATCGATCGATCGATCGAAAAA";
-        let states = hmm.label(query);
+        let states = hmm.label(query.as_bytes());
         let states = remove_imperfect_motifs(&hmm, &motifs, &states, query.as_bytes(), 6);
         let labels = hmm.label_motifs(&states);
         let expected = vec![
@@ -243,7 +243,7 @@ mod tests {
     fn annotate_imperfect_repeat_run() {
         let motifs = vec!["CAG".as_bytes().to_vec(), "A".as_bytes().to_vec()];
         let hmm = build_hmm(&motifs);
-        let labels = hmm.label_motifs(&hmm.label("CAGCAGCTGCAGCAGAAACAG"));
+        let labels = hmm.label_motifs(&hmm.label(b"CAGCAGCTGCAGCAGAAACAG"));
         let expected = vec![(0, 15, 0), (15, 18, 1), (18, 21, 0)];
 
         assert_eq!(summarize(&labels), expected);
@@ -255,7 +255,7 @@ mod tests {
         let motifs = vec!["AAG".as_bytes().to_vec(), "CAAC".as_bytes().to_vec()];
         let hmm = build_hmm(&motifs);
         let query = "TCTATGCAACCAACTTTCTGTTAGTCATAGTACCCCAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAAGAATAGAAATGTGTTTAAGAATTCCTCAATAAG";
-        let states = hmm.label(query);
+        let states = hmm.label(query.as_bytes());
         let states = remove_imperfect_motifs(&hmm, &motifs, &states, query.as_bytes(), 6);
         let labels = hmm.label_motifs(&states);
         let expected = vec![

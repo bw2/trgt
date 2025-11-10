@@ -3,12 +3,78 @@
 
 use super::cigar::Cigar;
 use crate::trgt::reads::snp;
-use itertools::Itertools;
 use rust_htslib::bam::{self, ext::BamRecordExtensions, record::Aux};
 use std::str;
 
-/// Represents a single HiFi read from an alignment record.
-#[derive(PartialEq, Clone)]
+/*
+// Future extension for partially spanning reads?
+// Most of the time we are only interested in fully spanning reads, so it should not be costly to differentiate between them
+
+#[derive(Clone, Debug)]
+pub struct FlankingRead {
+    pub read: LocusRead,
+    // ... some field to denote as left or right spanning
+    pub assign: AlleleAssign,
+}
+
+#[derive(Debug)]
+pub enum AnalysisRead {
+    Spanning(SpanningRead),
+    Flanking(FlankingRead),
+}
+
+impl AnalysisRead {
+    #[inline]
+    pub fn is_spanning(&self) -> bool {
+        matches!(self, AnalysisRead::Spanning(_))
+    }
+    #[inline]
+    pub fn as_spanning(&self) -> Option<&SpanningRead> {
+        if let AnalysisRead::Spanning(r) = self {
+            Some(r)
+        } else {
+            None
+        }
+    }
+    // ...
+}
+*/
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlleleAssign {
+    A0,
+    A1,
+    Both,
+    None,
+    // ... other assignments ...
+}
+
+pub type Span = (usize, usize);
+
+#[derive(Debug)]
+pub struct SpanningRead {
+    pub read: LocusRead,
+    pub span: Span,
+    pub assign: AlleleAssign,
+}
+
+impl SpanningRead {
+    #[inline]
+    pub fn tr_slice(&self) -> &[u8] {
+        &self.read.bases[self.span.0..self.span.1]
+    }
+    #[inline]
+    pub fn tr_len(&self) -> usize {
+        self.span.1 - self.span.0
+    }
+}
+
+/// Represents a single read from an alignment record after clipping to a locus.
+pub type LocusRead = HiFiRead;
+
+// NOTE: at construction this encapsulates the entire read, when it is clipped, it is still called a HiFiRead even though it is not the entire read anymore
+/// Represents a single read from an alignment record.
+#[derive(PartialEq)]
 pub struct HiFiRead {
     /// Unique identifier for the read.
     pub id: String,
@@ -30,20 +96,23 @@ pub struct HiFiRead {
     pub hp_tag: Option<u8>,
     /// Mapping quality score.
     pub mapq: u8,
+    /// Reference start position.
     pub ref_start: i64,
+    /// Reference end position.
     pub ref_end: i64,
 }
 
 impl std::fmt::Debug for HiFiRead {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let meth = match &self.meth {
-            Some(meth) => meth.iter().map(|m| (&m).to_string()).join(","),
-            None => "NA".to_string(),
-        };
+        let meth = self
+            .meth
+            .as_deref()
+            .map(|v| v.iter().map(u8::to_string).collect::<Vec<_>>().join(","))
+            .unwrap_or_else(|| "NA".into());
 
         f.debug_struct("Read")
             .field("id", &self.id)
-            .field("bases", &std::str::from_utf8(&self.bases).unwrap())
+            .field("bases", &String::from_utf8_lossy(&self.bases))
             .field("meth", &meth)
             .field("cigar", &self.cigar)
             .finish()
@@ -52,15 +121,16 @@ impl std::fmt::Debug for HiFiRead {
 
 fn get_meth(rec: &bam::Record, bases: &[u8]) -> Option<Vec<u8>> {
     let reverse = rec.is_reverse();
-    let cpg_indices: Vec<usize> = std::str::from_utf8(bases)
-        .unwrap()
-        .match_indices("CG")
-        .map(|(x, _)| {
-            x + if reverse { 1 } else { 0 } // need Gs for reverse
-        })
-        .collect::<Vec<usize>>();
+    let shift = usize::from(reverse); // 1 on reverse, 0 otherwise
+
+    let cpg_indices: Vec<usize> = bases
+        .windows(2)
+        .enumerate()
+        .filter_map(|(i, w)| (w == b"CG").then_some(i + shift))
+        .collect();
+
     let num_cpgs = cpg_indices.len();
-    let mut ans: Vec<u8> = vec![0; cpg_indices.len()];
+    let mut ans = vec![0u8; cpg_indices.len()];
     let mut ind = 0;
     if let Ok(mods) = rec.basemods_iter() {
         for (pos, m) in mods.flatten() {
@@ -76,7 +146,7 @@ fn get_meth(rec: &bam::Record, bases: &[u8]) -> Option<Vec<u8>> {
             }
         }
         if ind == 0 {
-            //empty MM/ML
+            // empty MM/ML
             return None;
         }
         if reverse {
@@ -96,10 +166,10 @@ impl HiFiRead {
     /// # Returns
     /// Returns a `HiFiRead` populated with data extracted from the BAM record.
     pub fn from_hts_rec(rec: &bam::Record) -> HiFiRead {
-        let id = str::from_utf8(rec.qname()).unwrap().to_string();
+        let id = str::from_utf8(rec.qname()).unwrap().to_owned();
         let is_reverse = rec.is_reverse();
-        let bases = rec.seq().as_bytes(); // TODO: Make a reference
-        let quals = rec.qual().to_vec(); // TODO: Make a reference
+        let bases = rec.seq().as_bytes();
+        let quals = rec.qual().to_vec();
 
         let meth = get_meth(rec, &bases);
 
@@ -165,6 +235,7 @@ fn get_hp_tag(rec: &bam::Record) -> Option<u8> {
         _ => None,
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +269,15 @@ mod tests {
         let rec = create_record(bases, mm, &ml, false);
         let res = get_meth(&rec, bases);
         assert_eq!(res, Some(vec![249, 4]));
+    }
+
+    #[test]
+    fn test_reverse_matching_modifications() {
+        let a = true;
+        let b = false;
+        let shift_a = usize::from(a);
+        let shift_b = usize::from(b);
+        assert_eq!(shift_a, 1);
+        assert_eq!(shift_b, 0);
     }
 }

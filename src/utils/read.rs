@@ -3,7 +3,7 @@ use crate::wfaligner::{WfaAlign, WfaOp};
 #[derive(Clone)]
 pub struct Read {
     pub read_name: String,
-    pub seq: String,
+    pub seq: Vec<u8>,
     pub left_flank: usize,
     pub right_flank: usize,
     pub allele: i32,
@@ -21,7 +21,7 @@ pub struct Beta {
 /// Convert betas from read coordinates to allele coordinates
 /// according to the provided alignment between the read and
 /// the allele consensus sequence
-pub fn project_betas(bio_align: &WfaAlign, betas: &Betas) -> Betas {
+pub fn project_betas(wfa_align: &WfaAlign, betas: &Betas) -> Betas {
     if betas.is_empty() {
         return Vec::new();
     }
@@ -30,7 +30,7 @@ pub fn project_betas(bio_align: &WfaAlign, betas: &Betas) -> Betas {
     let mut beta_index = 0;
 
     let mut proj_betas = Vec::new();
-    for op in &bio_align.operations {
+    for op in &wfa_align.operations {
         let at_pos = betas[beta_index].pos == seq_pos;
         let is_visible = *op == WfaOp::Match || *op == WfaOp::Subst;
         if at_pos && is_visible {

@@ -1,11 +1,10 @@
 # TRGT analysis of PureTarget data
 
-The [PureTarget repeat expansion
-panel](https://www.pacb.com/technology/puretarget) is a targeted assay used to
+The [PureTarget repeat expansion panel](https://www.pacb.com/technology/puretarget) is a targeted assay used to
 simultaneously resolve multiple pathogenic tandem repeats. The assay produces
 multiplexed high-depth sequencing libraries for dozens of samples in a single run.
 
-To use TRGT with PureTarget data, we need to
+To use TRGT with PureTarget data, we need to:
 
  1. Use all reads produced by a sequencing run
  2. Use `--preset targeted` when running TRGT
@@ -47,8 +46,7 @@ ccs --all movie.subreads.bam movie.input.bam
 
 In either case, the resulting `movie.input.bam` is the starting point of the
 analysis. It should be mapped using
-[pbmm2](https://github.com/pacificBiosciences/pbmm2) using the default `--preset
-HIFI`, similar to WGS reads:
+[pbmm2](https://github.com/pacificBiosciences/pbmm2) using the default `--preset HIFI`, similar to WGS reads:
 
 ```
 pbmm2 align --preset HIFI movie.input.bam movie.pbmm2.bam
@@ -56,8 +54,8 @@ pbmm2 align --preset HIFI movie.input.bam movie.pbmm2.bam
 
 ## 2. Use `--preset targeted` when running TRGT
 
-We strongly recommend PureTarget samples to be analyzed with the `--preset
-targeted` option when running TRGT. All other parameters can be set as the
+We strongly recommend PureTarget samples to be analyzed with the `--preset targeted` 
+option when running TRGT. All other parameters can be set as the
 defaults.
 
 The resulting command would look like this:
@@ -78,15 +76,12 @@ The resulting command would look like this:
 The PureTarget protocol produces insert sizes of about 5 kb.  Large expansions
 of loci like *FXN*, *C9orf72*, *DMPK* and *CNBP* produce much larger molecules
 that may not produce reads reaching HiFi quality thresholds at typical movie
-times (recall that HiFi reads have an [average quality of Q20 or
-more](https://ccs.how/nomenclature.html)). Using all reads produced by the
+times (recall that HiFi reads have an [average quality of Q20 or more](https://ccs.how/nomenclature.html)). Using all reads produced by the
 sequencer may significantly increase the coverage of expanded alleles and
-prevent [allelic
-dropouts](https://www.sciencedirect.com/topics/agricultural-and-biological-sciences/allelic-dropouts).
+prevent [allelic dropouts](https://www.sciencedirect.com/topics/agricultural-and-biological-sciences/allelic-dropouts).
 
 Below is a comparison using an extreme example of a *FXN* carrier sequenced on a
-Revio platform.  On the left is the [trgt
-plot](https://github.com/PacificBiosciences/trgt/blob/main/docs/trvz-plots.md)
+Revio platform.  On the left is the [trgt plot](https://github.com/PacificBiosciences/trgt/blob/main/docs/trvz-plots.md)
 when only HiFi reads are used, and on the right is the same dataset when all
 available reads are used for the analysis:
 
@@ -136,7 +131,7 @@ Using the `targeted` preset, you may see a warning like this:
 ```
 
 Internally, TRGT uses a heuristic that discards any lower-quality read that does
-not resemble a relatively perfect tandem repeat (less than 70% similarly in
+not resemble a relatively perfect tandem repeat (less than 90% similarly in
 terms of the edit distance).  This heuristic cannot be disabled, and the number
 of reads discarded is reported as a warning.
 

@@ -39,8 +39,8 @@ where
 }
 
 pub fn validate(args: ValidateArgs) -> Result<()> {
-    let catalog_reader = open_catalog_reader(&args.repeats_path)?;
-    let genome_reader = open_genome_reader(&args.genome_path)?;
+    let catalog_reader = open_catalog_reader(&args.repeats_src)?;
+    let genome_reader = open_genome_reader(&args.genome_src)?;
     let mut error_count = 0;
     let mut success_count = 0;
     let mut motifs_lengths = Vec::new();

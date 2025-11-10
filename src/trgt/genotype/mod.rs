@@ -7,6 +7,5 @@ mod gt;
 mod haploid;
 mod span_locater;
 
-pub use gt::Gt;
-pub use gt::TrSize;
+pub use gt::{Gt, TrSize};
 pub use span_locater::find_tr_spans;

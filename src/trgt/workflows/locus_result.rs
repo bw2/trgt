@@ -1,10 +1,10 @@
 use crate::hmm::spans::Annotation;
-use crate::trgt::reads::HiFiRead;
+use crate::trgt::reads::SpanningRead;
 use arrayvec::ArrayVec;
 
 #[derive(Debug)]
 pub struct Allele {
-    pub seq: String,
+    pub seq: Vec<u8>,
     pub annotation: Annotation,
     pub ci: (usize, usize),
     pub num_spanning: usize,
@@ -16,18 +16,14 @@ pub type Genotype = ArrayVec<Allele, 2>;
 #[derive(Debug)]
 pub struct LocusResult {
     pub genotype: Genotype,
-    pub reads: Vec<HiFiRead>,
-    pub tr_spans: Vec<(usize, usize)>,
-    pub classification: Vec<i32>,
+    pub spanning_reads: Vec<SpanningRead>,
 }
 
 impl LocusResult {
     pub fn empty() -> LocusResult {
         LocusResult {
             genotype: Genotype::new(),
-            reads: Vec::new(),
-            tr_spans: Vec::new(),
-            classification: Vec::new(),
+            spanning_reads: Vec::new(),
         }
     }
 }

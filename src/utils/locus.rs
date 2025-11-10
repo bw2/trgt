@@ -7,15 +7,15 @@ use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RegionLabel {
-    Flank(usize, usize),      // Coordinates
-    Tr(usize, usize, String), // Coordinates, Motif
+    Flank(usize, usize),       // Coordinates
+    Tr(usize, usize, Vec<u8>), // Coordinates, Motif
     Seq(usize, usize),
     Other(usize, usize),
 }
 
 #[derive(Debug)]
 pub struct Allele {
-    pub seq: String,
+    pub seq: Vec<u8>,
     pub region_labels: Vec<RegionLabel>,
     pub flank_labels: Vec<RegionLabel>,
     //pub base_labels: Vec<BaseLabel>,
@@ -25,9 +25,9 @@ pub struct Allele {
 pub struct Locus {
     pub id: String,
     pub struc: String,
-    pub motifs: Vec<String>,
-    pub left_flank: String,
-    pub right_flank: String,
+    pub motifs: Vec<Vec<u8>>,
+    pub left_flank: Vec<u8>,
+    pub right_flank: Vec<u8>,
     pub region: GenomicRegion,
 }
 
@@ -59,9 +59,10 @@ impl Locus {
 
         let fields = decode_fields(info_fields)?;
         let id = get_field(&fields, "ID")?;
+
         let motifs = get_field(&fields, "MOTIFS")?
             .split(',')
-            .map(|s| s.to_string())
+            .map(|s| s.as_bytes().to_vec())
             .collect();
         let struc = get_field(&fields, "STRUC")?;
 

@@ -3,7 +3,7 @@ use crate::utils::{align, Ploidy};
 use arrayvec::ArrayVec;
 use itertools::Itertools;
 
-pub fn genotype(ploidy: Ploidy, seqs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
+pub fn genotype(ploidy: Ploidy, seqs: &[&[u8]]) -> (Gt, Vec<Vec<u8>>, Vec<i32>) {
     let (unique_lens, len_counts) = get_len_hist(seqs);
 
     let gt = match ploidy {
@@ -14,7 +14,7 @@ pub fn genotype(ploidy: Ploidy, seqs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
 
     let allele_lens: ArrayVec<usize, 2> = gt.iter().map(|a| a.size).collect();
     let (unique_seqs, counts) = get_seq_hist(seqs.to_owned());
-    let mut alleles = consensus::get_consensus(allele_lens.clone(), &unique_seqs, &counts);
+    let mut alleles = consensus::get_consensus(&allele_lens, &unique_seqs, &counts);
     let seqs_by_allele = split(allele_lens, &unique_seqs, &counts);
 
     let mut fixed_alleles = Vec::new();
@@ -30,7 +30,7 @@ pub fn genotype(ploidy: Ploidy, seqs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
         };
 
         let fixed_allele = if 2 * reference_count >= coverage {
-            allele.to_string()
+            allele.to_vec()
         } else {
             let aligns = align(allele, seqs);
             consensus::repair_consensus(allele, seqs, &aligns)
@@ -63,7 +63,7 @@ pub fn genotype(ploidy: Ploidy, seqs: &[&str]) -> (Gt, Vec<String>, Vec<i32>) {
     (gt, alleles, classifications)
 }
 
-fn get_len_hist(seqs: &[&str]) -> (Vec<usize>, Vec<usize>) {
+fn get_len_hist(seqs: &[&[u8]]) -> (Vec<usize>, Vec<usize>) {
     let sorted_lens = seqs.iter().map(|seq| seq.len()).sorted().collect_vec();
     let mut unique_lens = Vec::new();
     let mut unique_len_counts = Vec::new();
@@ -74,7 +74,7 @@ fn get_len_hist(seqs: &[&str]) -> (Vec<usize>, Vec<usize>) {
     (unique_lens, unique_len_counts)
 }
 
-fn get_seq_hist(mut seqs: Vec<&str>) -> (Vec<&str>, Vec<usize>) {
+fn get_seq_hist(mut seqs: Vec<&[u8]>) -> (Vec<&[u8]>, Vec<usize>) {
     seqs.sort();
     let mut unique_seqs = Vec::new();
     let mut seq_counts = Vec::new();
@@ -88,14 +88,14 @@ fn get_seq_hist(mut seqs: Vec<&str>) -> (Vec<&str>, Vec<usize>) {
 
 fn split<'a>(
     allele_lens: ArrayVec<usize, 2>,
-    seqs: &'a [&'a str],
+    seqs: &'a [&'a [u8]],
     counts: &'a [usize],
-) -> Vec<(Vec<&'a str>, Vec<usize>)> {
+) -> Vec<(Vec<&'a [u8]>, Vec<usize>)> {
     if allele_lens.len() == 1 {
         return vec![(seqs.to_vec(), counts.to_vec())];
     }
     let (al1, al2) = allele_lens.iter().collect_tuple().unwrap();
-    let al1_seqs: Vec<&str> = seqs
+    let al1_seqs: Vec<&[u8]> = seqs
         .iter()
         .filter(|s| s.len().abs_diff(*al1) <= s.len().abs_diff(*al2))
         .cloned()

@@ -5,7 +5,7 @@ use itertools::Itertools;
 
 /// Align reads to the consensus sequence
 pub fn align_reads(
-    consensus: &str,
+    consensus: &[u8],
     consensus_align: &[AlignSeg],
     reads: &[&Read],
 ) -> Vec<(Align, Betas)> {
@@ -16,7 +16,7 @@ pub fn align_reads(
     let mut ret: Vec<(Align, Betas, i32, usize)> = reads
         .iter()
         .map(|read| {
-            let _status = aligner.align_end_to_end(consensus.as_bytes(), read.seq.as_bytes());
+            let _status = aligner.align_end_to_end(consensus, &read.seq);
             let wfa_align = aligner.get_alignment();
             let align = convert(consensus_align, &wfa_align);
             let betas = project_betas(&wfa_align, &read.betas);

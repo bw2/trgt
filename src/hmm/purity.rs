@@ -47,50 +47,50 @@ mod tests {
 
     #[test]
     fn calculate_purity_of_perfect_repeats() {
-        let motifs = vec!["CAG".as_bytes().to_vec(), "CCG".as_bytes().to_vec()];
+        let motifs = vec![b"CAG".to_vec(), b"CCG".to_vec()];
         let hmm = build_hmm(&motifs);
         let query = "CAGCAGCAGCCGCCGCCGCCG";
-        let states = hmm.label(query);
+        let states = hmm.label(query.as_bytes());
         assert_eq!(calc_purity(query.as_bytes(), &hmm, &motifs, &states), 1.0);
     }
 
     #[test]
     fn calculate_purity_of_imperfect_repeats() {
-        let motifs = vec!["CAG".as_bytes().to_vec(), "CCG".as_bytes().to_vec()];
+        let motifs = vec![b"CAG".to_vec(), b"CCG".to_vec()];
         let hmm = build_hmm(&motifs);
         let query = "CAGCGCAGCCGCCGCCGGG";
-        let states = hmm.label(query);
+        let states = hmm.label(query.as_bytes());
         let purity = calc_purity(query.as_bytes(), &hmm, &motifs, &states);
         assert_eq!(purity, 17.0 / 20.0);
     }
 
     #[test]
     fn calculate_purity_of_repeats_with_skip_states() {
-        let motifs = vec!["CAG".as_bytes().to_vec(), "CCG".as_bytes().to_vec()];
+        let motifs = vec![b"CAG".to_vec(), b"CCG".to_vec()];
         let hmm = build_hmm(&motifs);
         let query = "CAGCAGCAGTTTTTTTTCCGCCGCCG";
-        let states = hmm.label(query);
+        let states = hmm.label(query.as_bytes());
         let purity = calc_purity(query.as_bytes(), &hmm, &motifs, &states);
         assert_eq!(purity, 18.0 / 26.0);
     }
 
     #[test]
     fn calculate_purity_of_polyalanine_repeat() {
-        let motifs = vec!["GCN".as_bytes().to_vec()];
+        let motifs = vec![b"GCN".to_vec()];
         let hmm = build_hmm(&motifs);
         //                 GCNGCNGCNGXN
         let query = "GCAGCCGCTGAG";
-        let states = hmm.label(query);
+        let states = hmm.label(query.as_bytes());
         let purity = calc_purity(query.as_bytes(), &hmm, &motifs, &states);
         assert_eq!(purity, 11.0 / 12.0);
     }
 
     #[test]
     fn calculate_purity_of_empty_query() {
-        let motifs = vec!["CAG".as_bytes().to_vec(), "CCG".as_bytes().to_vec()];
+        let motifs = vec![b"CAG".to_vec(), b"CCG".to_vec()];
         let hmm = build_hmm(&motifs);
         let query = "";
-        let states = hmm.label(query);
+        let states = hmm.label(query.as_bytes());
         let purity = calc_purity(query.as_bytes(), &hmm, &motifs, &states);
         assert!(purity.is_nan());
     }

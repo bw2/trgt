@@ -4,7 +4,8 @@
 //! to represent only the portion that overlaps the specified region.
 use super::{
     cigar::{Cigar, CigarOp, CigarOpExt},
-    HiFiRead,
+    clip_bases::clip_meth,
+    HiFiRead, LocusRead,
 };
 
 impl HiFiRead {
@@ -16,53 +17,27 @@ impl HiFiRead {
     /// # Returns
     /// Returns an `Option<HiFiRead>` which is `Some` containing the clipped read if there is an overlap with the region,
     /// otherwise `None` if there is no overlap.
-    pub fn clip_to_region(&self, region: (i64, i64)) -> Option<HiFiRead> {
+    pub fn clip_to_region(&self, region: (i64, i64)) -> Option<LocusRead> {
         let cigar = self.cigar.as_ref()?;
-        let (clipped_ref_start, clipped_query_start, clipped_cigar) = clip_cigar(cigar, region)?;
+        let (clipped_ref_start, clipped_query_start, clipped_query_len, clipped_cigar) =
+            clip_cigar(cigar, region)?;
 
-        let mut clipped_bases = Vec::new();
-        let mut clipped_quals = Vec::new();
-        let mut query_pos = clipped_query_start;
+        let qs = clipped_query_start as usize;
+        let qe = qs + clipped_query_len as usize;
 
-        for op in &clipped_cigar {
-            let op_query_len = op.get_query_len();
-            clipped_bases.extend(
-                &self.bases[query_pos as usize..query_pos as usize + op_query_len as usize],
-            );
-            clipped_quals.extend(
-                &self.quals[query_pos as usize..query_pos as usize + op_query_len as usize],
-            );
-            query_pos += op_query_len;
-        }
+        let clipped_bases = self.bases[qs..qe].to_vec();
+        let clipped_quals = self.quals[qs..qe].to_vec();
 
-        let clipped_query_end = query_pos;
-        let clipped_meth = match &self.meth {
-            Some(profile) => {
-                let mut meth_iter = profile.iter();
-                let mut clipped_meth = Vec::new();
-                for index in 0..self.bases.len() - 1 {
-                    let dinuc = &self.bases[index..index + 2];
-                    let in_region =
-                        clipped_query_start as usize <= index && index < clipped_query_end as usize;
-                    if dinuc == b"CG" {
-                        if in_region {
-                            clipped_meth.push(*meth_iter.next().unwrap());
-                        } else {
-                            meth_iter.next();
-                        }
-                    }
-                }
-                Some(clipped_meth)
-            }
-            None => None,
-        };
+        let left_len = qs;
+        let right_len = self.bases.len() - qe;
+        let clipped_meth = clip_meth(&self.bases, self.meth.as_deref(), left_len, right_len);
 
         let cigar = Cigar {
             ref_pos: clipped_ref_start,
             ops: clipped_cigar,
         };
 
-        Some(HiFiRead {
+        Some(LocusRead {
             bases: clipped_bases,
             quals: clipped_quals,
             meth: clipped_meth,
@@ -90,19 +65,7 @@ fn get_reference_end(cigar: &Cigar) -> i64 {
 }
 
 /// Clips an alignment to a given reference region
-///
-/// Outputs reference start, query start, and operations of the clipped alignment
-/// Clips a CIGAR string to a specified reference region.
-///
-/// # Arguments
-/// * `cigar` - A reference to the `Cigar` struct representing the read's alignment.
-/// * `region` - A tuple `(i64, i64)` representing the start and end positions of the reference region.
-///
-/// # Returns
-/// Returns an `Option<(i64, i64, Vec<CigarOp>)>` which is `Some` containing the reference start position,
-/// query start position, and the clipped CIGAR operations if there is an overlap with the region,
-/// otherwise `None` if there is no overlap.
-fn clip_cigar(cigar: &Cigar, region: (i64, i64)) -> Option<(i64, i64, Vec<CigarOp>)> {
+fn clip_cigar(cigar: &Cigar, region: (i64, i64)) -> Option<(i64, i64, u32, Vec<CigarOp>)> {
     let (region_start, region_end) = region;
     let (read_start, read_end) = (cigar.ref_pos, get_reference_end(cigar));
 
@@ -115,10 +78,10 @@ fn clip_cigar(cigar: &Cigar, region: (i64, i64)) -> Option<(i64, i64, Vec<CigarO
 
     let mut op_iter = cigar.ops.iter();
     let mut current_op = op_iter.next();
-
     let mut clipped_ops = Vec::new();
+    let mut clipped_query_len: u32 = 0;
 
-    // Skip operations outside of the target region
+    // Skip operations left of the target region
     while current_op.is_some() && ref_pos + current_op.unwrap().get_ref_len() <= region_start {
         ref_pos += current_op.unwrap().get_ref_len();
         query_pos += current_op.unwrap().get_query_len();
@@ -138,14 +101,18 @@ fn clip_cigar(cigar: &Cigar, region: (i64, i64)) -> Option<(i64, i64, Vec<CigarO
         } else {
             region_end - region_start
         } as u32;
-        clipped_ops.push(match current_op.unwrap() {
+
+        let clipped_op = match current_op.unwrap() {
             CigarOp::Match(_) => CigarOp::Match(clipped_op_ref_len),
             CigarOp::RefSkip(_) => CigarOp::RefSkip(clipped_op_ref_len),
             CigarOp::Del(_) => CigarOp::Del(clipped_op_ref_len),
             CigarOp::Equal(_) => CigarOp::Equal(clipped_op_ref_len),
             CigarOp::Diff(_) => CigarOp::Diff(clipped_op_ref_len),
             op => panic!("Unexpected operation {:?}", op),
-        });
+        };
+
+        clipped_query_len += clipped_op.get_query_len() as u32;
+        clipped_ops.push(clipped_op);
 
         clipped_ref_start += ref_outside_len;
         if clipped_ops.last().unwrap().get_query_len() != 0 {
@@ -159,7 +126,9 @@ fn clip_cigar(cigar: &Cigar, region: (i64, i64)) -> Option<(i64, i64, Vec<CigarO
 
     // Copy operations contained within the region
     while current_op.is_some() && ref_pos + current_op.unwrap().get_ref_len() <= region_end {
-        clipped_ops.push(*current_op.unwrap());
+        let op = *current_op.unwrap();
+        clipped_query_len += op.get_query_len() as u32;
+        clipped_ops.push(op);
         ref_pos += current_op.unwrap().get_ref_len();
         query_pos += current_op.unwrap().get_query_len();
         current_op = op_iter.next();
@@ -177,39 +146,21 @@ fn clip_cigar(cigar: &Cigar, region: (i64, i64)) -> Option<(i64, i64, Vec<CigarO
                 CigarOp::Diff(_) => CigarOp::Diff(ref_inside_len),
                 _ => panic!("Unexpected operation {:?}", op),
             };
+            clipped_query_len += clipped_op.get_query_len() as u32;
             clipped_ops.push(clipped_op);
         }
     }
-
-    Some((clipped_ref_start, clipped_query_start, clipped_ops))
+    Some((
+        clipped_ref_start,
+        clipped_query_start,
+        clipped_query_len,
+        clipped_ops,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rust_htslib::bam::record::CigarString;
-
-    fn make_read(bases: &str, meths: Vec<u8>, cigar: Cigar) -> HiFiRead {
-        HiFiRead {
-            id: "read1".to_string(),
-            is_reverse: false,
-            bases: bases.as_bytes().to_vec(),
-            quals: "(".repeat(bases.len()).as_bytes().to_vec(),
-            meth: Some(meths),
-            read_qual: None,
-            mismatch_positions: None,
-            cigar: Some(cigar),
-            hp_tag: None,
-            mapq: 60,
-            ref_start: 0,
-            ref_end: 0,
-        }
-    }
-
-    fn make_cigar(ref_pos: i64, encoding: &str) -> Cigar {
-        let ops = CigarString::try_from(encoding).unwrap().to_vec();
-        Cigar { ref_pos, ops }
-    }
+    use crate::trgt::reads::test_utils::{make_cigar, make_read};
 
     #[test]
     fn if_no_overlap_then_none() {
@@ -230,9 +181,16 @@ mod tests {
 
     #[test]
     fn if_alignment_contained_inside_region_then_original_read() {
-        let cigar = make_cigar(10, "5S3=2D2=1X2=5I3=10S");
-        let read = make_read("AAAAACGCTCGTTAAATCACGAAAAAAAAAA", vec![10, 20, 30], cigar);
-        let expected = read.clone();
+        let read = make_read(
+            "AAAAACGCTCGTTAAATCACGAAAAAAAAAA",
+            vec![10, 20, 30],
+            make_cigar(10, "5S3=2D2=1X2=5I3=10S"),
+        );
+        let expected = make_read(
+            "AAAAACGCTCGTTAAATCACGAAAAAAAAAA",
+            vec![10, 20, 30],
+            make_cigar(10, "5S3=2D2=1X2=5I3=10S"),
+        );
 
         let clipped_read = read.clip_to_region((9, 23));
         assert_eq!(clipped_read, Some(expected));
