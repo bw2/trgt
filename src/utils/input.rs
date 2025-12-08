@@ -1,12 +1,12 @@
 use super::read::{Beta, Betas, Read};
 use crate::{
     trgt::locus::create_chrom_lookup,
-    utils::{locus::Locus, open_bam_reader, open_vcf_reader, InputSource, Result},
+    utils::{locus::InputLocus, open_bam_reader, open_vcf_reader, InputSource, Result},
 };
 use itertools::Itertools;
 use rust_htslib::{
     bam::{self, record::Aux, Read as BamRead},
-    bcf::{record::GenotypeAllele::UnphasedMissing, Read as BcfRead, Record},
+    bcf::{self, record::GenotypeAllele, Read as BcfRead},
     faidx,
 };
 use std::{collections::HashSet, io::BufRead, str};
@@ -18,7 +18,7 @@ pub struct Span {
     pub end: usize,
 }
 
-pub fn get_alleles(vcf_src: &InputSource, locus: &Locus) -> Result<Vec<Vec<u8>>> {
+pub fn get_alleles(vcf_src: &InputSource, locus: &InputLocus) -> Result<Vec<Vec<u8>>> {
     let mut vcf = open_vcf_reader(vcf_src)?;
     let mut record = vcf.empty_record();
     while let Some(result) = vcf.read(&mut record) {
@@ -35,8 +35,11 @@ pub fn get_alleles(vcf_src: &InputSource, locus: &Locus) -> Result<Vec<Vec<u8>>>
         }
 
         let gt = record.genotypes().unwrap().get(0);
-        if gt[0] == UnphasedMissing {
-            return Err(format!("Missing genotype for TRID={}", tr_id));
+        if matches!(
+            gt[0],
+            GenotypeAllele::UnphasedMissing | GenotypeAllele::PhasedMissing
+        ) {
+            return Err(format!("Missing genotype for TRID={tr_id}"));
         }
 
         let alleles = get_allele_seqs(locus, &record);
@@ -50,7 +53,7 @@ pub fn get_locus<R>(
     genome_reader: faidx::Reader,
     tr_id: &str,
     flank_len: usize,
-) -> Result<Locus>
+) -> Result<InputLocus>
 where
     R: BufRead,
 {
@@ -61,7 +64,7 @@ where
         let line =
             result_line.map_err(|e| format!("Error at BED line {}: {}", line_number + 1, e))?;
         if line.contains(&query) {
-            return Locus::new(&genome_reader, &chrom_lookup, &line, flank_len)
+            return InputLocus::new(&genome_reader, &chrom_lookup, &line, flank_len)
                 .map_err(|e| format!("Error at BED line {}: {}", line_number + 1, e));
         }
     }
@@ -70,7 +73,7 @@ where
 
 pub fn get_reads(
     reads_source: &InputSource,
-    locus: &Locus,
+    locus: &InputLocus,
     max_allele_reads: Option<usize>,
 ) -> Result<Vec<Read>> {
     let mut bam = open_bam_reader(reads_source, 1)?;
@@ -194,23 +197,28 @@ pub fn get_reads(
     Ok(seqs)
 }
 
-fn get_allele_seqs(locus: &Locus, record: &Record) -> Vec<Vec<u8>> {
+fn get_allele_seqs(locus: &InputLocus, record: &bcf::Record) -> Vec<Vec<u8>> {
     let lf = &locus.left_flank;
     let rf = &locus.right_flank;
     let genotype = record.genotypes().unwrap().get(0);
 
-    let indexes = genotype.iter().map(|a| a.index().unwrap()).collect_vec();
-    let mut alleles = indexes
+    let mut indexes: Vec<usize> = genotype
         .iter()
-        .map(|i| record.alleles()[*i as usize])
-        .collect_vec();
+        .filter_map(|allele| allele.index())
+        .map(|idx| idx as usize)
+        .collect();
+
+    indexes.sort_unstable();
+
+    let mut alleles = indexes.iter().map(|&i| record.alleles()[i]).collect_vec();
+
     // TRGT outputs the shorter allele first (unless the longer allele is ref). So if the first allele is
     // longer and is alt, the allele ordering must have changed.
     if indexes.len() == 2 && indexes[0] != 0 && alleles[0].len() > alleles[1].len() {
         alleles.swap(0, 1);
     }
 
-    let alleles = alleles
+    alleles
         .into_iter()
         .map(|allele| {
             let allele_seq = allele.iter().skip(1).copied().collect_vec();
@@ -219,9 +227,7 @@ fn get_allele_seqs(locus: &Locus, record: &Record) -> Vec<Vec<u8>> {
             result.extend_from_slice(rf);
             result
         })
-        .collect_vec();
-
-    alleles
+        .collect_vec()
 }
 
 fn parse_meth(read: &bam::Record, seq: &[u8]) -> Result<Betas> {
@@ -267,4 +273,78 @@ fn parse_meth(read: &bam::Record, seq: &[u8]) -> Result<Betas> {
     }
 
     Ok(betas)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::{locus::InputLocusBuilder, test_util, InputSource};
+    use rust_htslib::bcf::record::GenotypeAllele;
+
+    #[test]
+    fn test_get_alleles_handles_genotypes() {
+        use GenotypeAllele::{Phased, Unphased};
+
+        let locus = InputLocusBuilder::new().build();
+        let alleles = [b"A".as_ref(), b"AA".as_ref(), b"AAC".as_ref()];
+
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(&str, Vec<GenotypeAllele>, Vec<&[u8]>)> = vec![
+            // (name, genotype, expected_allele_seqs)
+            ("0/0", vec![Unphased(0), Unphased(0)], vec![b"LR", b"LR"]),
+            ("0/1", vec![Unphased(0), Unphased(1)], vec![b"LR", b"LAR"]),
+            ("1/1", vec![Unphased(1), Unphased(1)], vec![b"LAR", b"LAR"]),
+            ("1/2", vec![Unphased(1), Unphased(2)], vec![b"LAR", b"LACR"]),
+            ("0", vec![Unphased(0)], vec![b"LR"]),
+            ("1", vec![Unphased(1)], vec![b"LAR"]),
+            ("0|1", vec![Phased(0), Phased(1)], vec![b"LR", b"LAR"]),
+            ("1|0", vec![Phased(1), Phased(0)], vec![b"LR", b"LAR"]),
+            ("1|2", vec![Phased(1), Phased(2)], vec![b"LAR", b"LACR"]),
+            ("2|1", vec![Phased(2), Phased(1)], vec![b"LAR", b"LACR"]),
+        ];
+
+        for (name, genotype, expected) in cases {
+            let temp_vcf = test_util::write_vcf_with_gt(locus.id.as_bytes(), &alleles, &genotype);
+            let vcf_src = InputSource::Local(temp_vcf.path().to_path_buf());
+            let result = get_alleles(&vcf_src, &locus).unwrap();
+            let expected: Vec<Vec<u8>> = expected.iter().map(|e| e.to_vec()).collect();
+            assert_eq!(result, expected, "Failed for genotype {name}");
+        }
+    }
+
+    #[test]
+    fn test_get_alleles_errors_on_phased_missing_gt() {
+        let locus = InputLocusBuilder::new().build();
+        let alleles = [b"A".as_ref(), b"AA".as_ref()];
+        let genotype = [GenotypeAllele::PhasedMissing, GenotypeAllele::PhasedMissing];
+        let temp_vcf = test_util::write_vcf_with_gt(locus.id.as_bytes(), &alleles, &genotype);
+        let vcf_src = InputSource::Local(temp_vcf.path().to_path_buf());
+        let err = get_alleles(&vcf_src, &locus).unwrap_err();
+        assert!(err.contains("Missing genotype"));
+    }
+
+    #[test]
+    fn test_get_alleles_errors_on_unphased_missing_gt() {
+        let locus = InputLocusBuilder::new().build();
+        let alleles = [b"A".as_ref(), b"AA".as_ref()];
+        let genotype = [
+            GenotypeAllele::UnphasedMissing,
+            GenotypeAllele::UnphasedMissing,
+        ];
+        let temp_vcf = test_util::write_vcf_with_gt(locus.id.as_bytes(), &alleles, &genotype);
+        let vcf_src = InputSource::Local(temp_vcf.path().to_path_buf());
+        let err = get_alleles(&vcf_src, &locus).unwrap_err();
+        assert!(err.contains("Missing genotype"));
+    }
+
+    #[test]
+    fn test_get_alleles_errors_on_trid_not_found() {
+        let locus = InputLocusBuilder::new().id("nonexistent").build();
+        let alleles = [b"A".as_ref(), b"AA".as_ref()];
+        let genotype = [GenotypeAllele::Unphased(0), GenotypeAllele::Unphased(1)];
+        let temp_vcf = test_util::write_vcf_with_gt(b"other_trid", &alleles, &genotype);
+        let vcf_src = InputSource::Local(temp_vcf.path().to_path_buf());
+        let err = get_alleles(&vcf_src, &locus).unwrap_err();
+        assert!(err.contains("TRID=nonexistent missing"));
+    }
 }

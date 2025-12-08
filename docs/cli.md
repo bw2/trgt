@@ -103,10 +103,12 @@ Advanced:
 - `--process-n <PROCESS_N>` Only process N records
 - `--print-header` Print only the merged header and exit
 - `--force-single` Run even if there is only one file on input
-- `--force-samples` Allow duplicate sample IDs across input files
 - `--no-version` Do not append version and command line to the header
 - `--quit-on-errors` Quit immediately on errors during merging
 - `--contig <CONTIG>` Process only the specified contigs (comma-separated list)
+- `-t, --threads <THREADS>` Number of threads for (de)compressing input/output VCF files (shared across readers and writer) [default: 2]
+- `--no-index` Stream VCFs without loading their indexes (contig order must match across inputs)
+- `-W, --write-index` Write index for the output compressed VCF/BCF file
 
 ## Validate command-line
 

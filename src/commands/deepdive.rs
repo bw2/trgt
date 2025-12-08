@@ -2,7 +2,7 @@ use crate::cli::{self, DeepdiveArgs};
 use crate::trgt::locus::create_chrom_lookup;
 use crate::utils::{
     input::{get_alleles, get_reads},
-    locus::Locus,
+    locus::InputLocus,
     {open_catalog_reader, open_genome_reader, Result},
 };
 use crate::wfaligner::{AlignmentScope, MemoryModel, WFAligner, WfaOp};
@@ -77,7 +77,7 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
     let genome_reader = open_genome_reader(&args.genome_src)?;
     let chrom_lookup = create_chrom_lookup(&genome_reader)?;
 
-    let locus_prelim = Locus::new(&genome_reader, &chrom_lookup, &locus_line, 0)
+    let locus_prelim = InputLocus::new(&genome_reader, &chrom_lookup, &locus_line, 0)
         .map_err(|e| format!("Error parsing locus line: {}", e))?;
     let reads = get_reads(&args.reads_src, &locus_prelim, None)?;
 
@@ -88,7 +88,7 @@ pub fn deepdive(args: DeepdiveArgs) -> Result<()> {
         .max()
         .unwrap();
 
-    let locus = Locus::new(&genome_reader, &chrom_lookup, &locus_line, flank_length)
+    let locus = InputLocus::new(&genome_reader, &chrom_lookup, &locus_line, flank_length)
         .map_err(|e| format!("Error parsing locus line: {}", e))?;
 
     let allele_seqs = get_alleles(&args.bcf_src, &locus)?;

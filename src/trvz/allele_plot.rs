@@ -3,12 +3,12 @@ use super::align_allele::get_allele_align;
 use super::params::{get_meth_colors, Color, ColorMap, PlotParams};
 use super::scale::get_scale;
 use crate::trvz::align::{Align, AlignOp};
-use crate::utils::{locus::Locus, read::Betas, read::Read};
+use crate::utils::{locus::InputLocus, read::Betas, read::Read};
 use itertools::Itertools;
 use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape};
 
 pub fn plot_alleles(
-    locus: &Locus,
+    locus: &InputLocus,
     what_to_show: &str,
     allele_seqs: &[Vec<u8>],
     reads: &[Read],

@@ -84,6 +84,7 @@ pub fn trgt(args: GenotypeArgs) -> Result<()> {
         .sample_name
         .unwrap_or(get_sample_name(&args.reads_src, &bam_header)?);
 
+    // TODO: A thread pool for the writers can be shared between the VCF and BAM writers
     let mut vcf_writer = create_writer(&args.output_prefix, "vcf.gz", |path| {
         VcfWriter::new(path, &sample_name, &bam_header)
     })?;
@@ -110,6 +111,7 @@ pub fn trgt(args: GenotypeArgs) -> Result<()> {
         min_read_qual: args.min_hifi_read_qual,
         max_depth: args.max_depth,
         min_flank_id_frac: args.min_flank_id_frac,
+        skip_phase_annotation: args.skip_phase_annotation,
     });
 
     let num_fetcher_threads = args

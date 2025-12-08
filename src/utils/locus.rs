@@ -22,7 +22,7 @@ pub struct Allele {
 }
 
 #[derive(Debug)]
-pub struct Locus {
+pub struct InputLocus {
     pub id: String,
     pub struc: String,
     pub motifs: Vec<Vec<u8>>,
@@ -31,7 +31,12 @@ pub struct Locus {
     pub region: GenomicRegion,
 }
 
-impl Locus {
+impl InputLocus {
+    #[cfg(test)]
+    pub fn builder() -> InputLocusBuilder {
+        InputLocusBuilder::default()
+    }
+
     pub fn new(
         genome_reader: &faidx::Reader,
         chrom_lookup: &HashMap<String, u32>,
@@ -68,7 +73,7 @@ impl Locus {
 
         let (left_flank, _, right_flank) = get_tr_and_flanks(genome_reader, &region, flank_len)?;
 
-        Ok(Locus {
+        Ok(InputLocus {
             id,
             struc,
             motifs,
@@ -76,5 +81,77 @@ impl Locus {
             right_flank,
             region,
         })
+    }
+}
+
+#[cfg(test)]
+pub struct InputLocusBuilder {
+    id: String,
+    struc: String,
+    motifs: Vec<Vec<u8>>,
+    left_flank: Vec<u8>,
+    right_flank: Vec<u8>,
+    region: GenomicRegion,
+}
+
+#[cfg(test)]
+impl InputLocusBuilder {
+    pub fn new() -> Self {
+        Self {
+            id: "tr1".to_string(),
+            struc: "".to_string(),
+            motifs: vec![],
+            left_flank: b"L".to_vec(),
+            right_flank: b"R".to_vec(),
+            region: GenomicRegion::new("chr1", 0, 10).unwrap(),
+        }
+    }
+
+    pub fn id(mut self, id: &str) -> Self {
+        self.id = id.to_string();
+        self
+    }
+
+    pub fn struc(mut self, struc: &str) -> Self {
+        self.struc = struc.to_string();
+        self
+    }
+
+    pub fn motifs(mut self, motifs: Vec<Vec<u8>>) -> Self {
+        self.motifs = motifs;
+        self
+    }
+
+    pub fn left_flank(mut self, flank: Vec<u8>) -> Self {
+        self.left_flank = flank;
+        self
+    }
+
+    pub fn right_flank(mut self, flank: Vec<u8>) -> Self {
+        self.right_flank = flank;
+        self
+    }
+
+    pub fn region(mut self, region: GenomicRegion) -> Self {
+        self.region = region;
+        self
+    }
+
+    pub fn build(self) -> InputLocus {
+        InputLocus {
+            id: self.id,
+            struc: self.struc,
+            motifs: self.motifs,
+            left_flank: self.left_flank,
+            right_flank: self.right_flank,
+            region: self.region,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for InputLocusBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }

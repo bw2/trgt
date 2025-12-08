@@ -61,7 +61,7 @@ pub enum Command {
     Validate(ValidateArgs),
     #[clap(about = "Tandem Repeat VCF Merger")]
     Merge(MergeArgs),
-    #[clap(about = "Locus-specific deep dive")]
+    #[clap(about = "Locus-specific Deep Dive")]
     Deepdive(DeepdiveArgs),
 }
 
@@ -301,6 +301,10 @@ pub struct GenotypeArgs {
         hide = true
     )]
     pub result_channel_buffer_size: usize,
+
+    /// Skip phasing annotations
+    #[arg(long = "skip-phase-annotation", help_heading = "Advanced", hide = true)]
+    pub skip_phase_annotation: bool,
 }
 
 impl GenotypeArgs {
@@ -473,28 +477,9 @@ pub struct MergeArgs {
     #[arg(long = "force-single", help_heading = "Advanced")]
     pub force_single: bool,
 
-    /// Resolve duplicate sample names
-    #[arg(long = "force-samples", help_heading = "Advanced", hide = true)]
-    pub force_samples: bool,
-
     /// Do not append version and command line to the header
     #[arg(long = "no-version", help_heading = "Advanced")]
     pub no_version: bool,
-
-    /// Assume genotypes at missing sites are 0/0
-    #[arg(long = "missing-to-ref", help_heading = "Advanced", hide = true)]
-    pub missing_to_ref: bool,
-
-    /// Set variant merging strategy to use
-    #[arg(
-        long = "strategy",
-        value_name = "STRATEGY",
-        value_parser = ["exact"],
-        default_value = "exact",
-        help_heading = "Advanced",
-        hide = true
-    )]
-    pub merge_strategy: String,
 
     /// Quit immediately on errors during merging
     #[arg(long = "quit-on-errors", help_heading = "Advanced")]
@@ -508,6 +493,25 @@ pub struct MergeArgs {
         help_heading = "Advanced"
     )]
     pub contigs: Option<Vec<String>>,
+
+    /// Number of threads for (de)compressing input/output VCF files (a threadpool is shared between all readers and the writer)
+    #[arg(
+        short = 't',
+        long = "threads",
+        value_name = "THREADS",
+        default_value = "2",
+        value_parser = threads_in_range,
+        help_heading = "Advanced"
+    )]
+    pub threads: usize,
+
+    /// Stream VCFs without loading their indexes (contig order must match across inputs)
+    #[arg(long = "no-index", help_heading = "Advanced")]
+    pub no_index: bool,
+
+    /// Write index for the output compressed VCF/BCF file
+    #[arg(short = 'W', long = "write-index", help_heading = "Advanced")]
+    pub write_index: bool,
 }
 
 impl MergeArgs {

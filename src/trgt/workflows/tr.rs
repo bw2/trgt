@@ -11,6 +11,7 @@ use crate::trgt::{
 use crate::utils::{Genotyper, Ploidy, Result};
 use itertools::Itertools;
 use rand::{seq::SliceRandom, SeedableRng};
+use std::collections::BTreeMap;
 use std::vec;
 
 pub struct Params {
@@ -18,6 +19,7 @@ pub struct Params {
     pub min_read_qual: f32,
     pub search_flank_len: usize,
     pub max_depth: usize,
+    pub skip_phase_annotation: bool,
 }
 
 pub fn analyze(mut locus: Locus, params: &Params) -> (Locus, Result<LocusResult>) {
@@ -70,6 +72,7 @@ pub fn analyze(mut locus: Locus, params: &Params) -> (Locus, Result<LocusResult>
     }
 
     deterministic_shuffle(&mut spanning_reads, &locus.id);
+    normalize_by_phase_set(&mut spanning_reads);
 
     let trs: Vec<&[u8]> = spanning_reads.iter().map(|sr| sr.tr_slice()).collect();
     let (mut gt, mut allele_seqs, mut classification) = match locus.genotyper {
@@ -136,11 +139,18 @@ pub fn analyze(mut locus: Locus, params: &Params) -> (Locus, Result<LocusResult>
         }
     }
 
+    let phase_result = if params.skip_phase_annotation {
+        None
+    } else {
+        phase_by_hp_ps(&spanning_reads)
+    };
+
     (
         locus,
         Ok(LocusResult {
             genotype,
             spanning_reads,
+            phase_result,
         }),
     )
 }
@@ -412,4 +422,235 @@ pub fn deterministic_shuffle(reads: &mut [SpanningRead], locus_id: &str) {
     }
     let mut rng = rand_chacha::ChaCha12Rng::seed_from_u64(fnv1a64(locus_id.as_bytes()));
     reads.shuffle(&mut rng)
+}
+
+fn normalize_by_phase_set(reads: &mut [SpanningRead]) {
+    let mut ps_counts: BTreeMap<u32, usize> = BTreeMap::new();
+    for sr in reads.iter().filter(|sr| sr.read.ps_tag.is_some()) {
+        *ps_counts.entry(sr.read.ps_tag.unwrap()).or_insert(0) += 1;
+    }
+
+    let Some((&dominant_ps, _)) = ps_counts.iter().max_by(|(ps_a, count_a), (ps_b, count_b)| {
+        count_a.cmp(count_b).then_with(|| ps_b.cmp(ps_a))
+    }) else {
+        return;
+    };
+
+    for sr in reads {
+        if sr.read.ps_tag != Some(dominant_ps) {
+            sr.read.ps_tag = None;
+            sr.read.hp_tag = None;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PhaseResult {
+    /// Phased genotype order to emit in VCF GT, e.g. (0,1) means "0|1".
+    pub phased_gt_digits: (u8, u8),
+    pub ps: Option<u32>,
+}
+
+pub fn phase_by_hp_ps(reads: &[SpanningRead]) -> Option<PhaseResult> {
+    const HP_THRESHOLD: f64 = 0.7;
+    const CONFLICT_THRESHOLD: f64 = 0.1;
+
+    if reads.is_empty() {
+        return None;
+    }
+
+    let mut chosen_ps = None;
+    for r in reads.iter() {
+        if let Some(ps) = r.read.ps_tag {
+            match chosen_ps {
+                Some(existing) if existing != ps => {
+                    return None;
+                }
+                None => chosen_ps = Some(ps),
+                _ => {}
+            }
+        }
+    }
+
+    let mut c = [[0usize; 2]; 2];
+    let mut n_reads = 0usize;
+    let mut n_reads_with_hp = 0usize;
+    let mut seen_hp = [false; 2];
+    for r in reads.iter() {
+        n_reads += 1;
+        let Some(hp) = r.read.hp_tag else { continue };
+        debug_assert!(hp == 1 || hp == 2);
+        let hp_idx = (hp - 1) as usize;
+        n_reads_with_hp += 1;
+        let al = match r.assign {
+            AlleleAssign::A0 => 0,
+            AlleleAssign::A1 => 1,
+            _ => continue,
+        };
+        seen_hp[hp_idx] = true;
+        c[hp_idx][al] += 1;
+    }
+
+    if !seen_hp.iter().all(|seen| *seen) {
+        return None;
+    }
+
+    let hp_fraction = n_reads_with_hp as f64 / n_reads as f64;
+    if hp_fraction < HP_THRESHOLD {
+        return None;
+    }
+
+    // A: HP1->allele0, HP2->allele1  (gives GT "0|1")
+    // B: HP1->allele1, HP2->allele0  (gives GT "1|0")
+    let agree_a = c[0][0] + c[1][1]; // 0|1
+    let agree_b = c[0][1] + c[1][0]; // 1|0
+
+    let conflict_fraction = 1.0 - (agree_a.max(agree_b) as f64 / n_reads_with_hp as f64);
+    if conflict_fraction > CONFLICT_THRESHOLD {
+        return None;
+    }
+
+    // Orientation that maximises agreement.
+    let phased_gt_digits = if agree_a >= agree_b {
+        (0u8, 1u8)
+    } else {
+        (1u8, 0u8)
+    };
+
+    Some(PhaseResult {
+        phased_gt_digits,
+        ps: chosen_ps,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trgt::reads::HiFiRead;
+
+    fn build_read(id: usize, hp: Option<u8>, ps: Option<u32>) -> SpanningRead {
+        SpanningRead {
+            read: HiFiRead {
+                id: format!("read-{id}"),
+                is_reverse: false,
+                bases: vec![b'A'; 10],
+                quals: vec![30; 10],
+                meth: None,
+                read_qual: None,
+                mismatch_positions: None,
+                cigar: None,
+                hp_tag: hp,
+                ps_tag: ps,
+                mapq: 60,
+                ref_start: 0,
+                ref_end: 10,
+            },
+            span: (0, 2),
+            assign: AlleleAssign::None,
+        }
+    }
+
+    #[test]
+    fn normalize_reads_keeps_dominant_ps() {
+        let mut reads = vec![
+            build_read(1, Some(1), Some(10)),
+            build_read(2, Some(1), Some(10)),
+            build_read(3, Some(2), Some(20)),
+            build_read(4, None, None),
+        ];
+
+        normalize_by_phase_set(&mut reads);
+
+        assert_eq!(reads[0].read.ps_tag, Some(10));
+        assert_eq!(reads[0].read.hp_tag, Some(1));
+        assert_eq!(reads[1].read.ps_tag, Some(10));
+        assert_eq!(reads[1].read.hp_tag, Some(1));
+        assert_eq!(reads[2].read.ps_tag, None);
+        assert_eq!(reads[2].read.hp_tag, None);
+        assert_eq!(reads[3].read.ps_tag, None);
+        assert_eq!(reads[3].read.hp_tag, None);
+    }
+
+    #[test]
+    fn normalize_reads_prefers_smaller_ps_on_ties() {
+        let mut reads = vec![
+            build_read(1, Some(1), Some(10)),
+            build_read(2, Some(1), Some(20)),
+            build_read(3, Some(2), Some(20)),
+            build_read(4, Some(2), Some(10)),
+        ];
+
+        normalize_by_phase_set(&mut reads);
+
+        assert_eq!(reads[0].read.ps_tag, Some(10));
+        assert_eq!(reads[1].read.ps_tag, None);
+        assert_eq!(reads[2].read.ps_tag, None);
+        assert_eq!(reads[3].read.ps_tag, Some(10));
+    }
+
+    #[test]
+    fn normalize_reads_no_ps_observed() {
+        let mut reads = vec![
+            build_read(1, Some(1), None),
+            build_read(2, None, None),
+            build_read(3, None, None),
+        ];
+
+        normalize_by_phase_set(&mut reads);
+
+        assert_eq!(reads[0].read.ps_tag, None);
+        assert_eq!(reads[0].read.hp_tag, Some(1));
+        assert_eq!(reads[1].read.ps_tag, None);
+        assert_eq!(reads[1].read.hp_tag, None);
+        assert_eq!(reads[2].read.ps_tag, None);
+        assert_eq!(reads[2].read.hp_tag, None);
+    }
+
+    #[test]
+    fn phase_by_hp_ps_rejects_multiple_ps() {
+        let mut reads = vec![
+            build_read(1, Some(1), Some(10)),
+            build_read(2, Some(2), Some(20)),
+        ];
+        for sr in &mut reads {
+            sr.assign = AlleleAssign::A0;
+        }
+
+        assert!(phase_by_hp_ps(&reads).is_none());
+    }
+
+    #[test]
+    fn phase_by_hp_ps_requires_two_hps() {
+        let mut reads = vec![
+            build_read(1, Some(1), Some(10)),
+            build_read(2, Some(1), Some(10)),
+        ];
+        reads[0].assign = AlleleAssign::A0;
+        reads[1].assign = AlleleAssign::A1;
+
+        assert!(phase_by_hp_ps(&reads).is_none());
+    }
+
+    #[test]
+    fn phase_by_hp_ps_counts_hp_reads_when_assigned() {
+        let mut reads = vec![
+            build_read(1, Some(1), Some(10)),
+            build_read(2, Some(1), Some(10)),
+            build_read(3, Some(2), Some(10)),
+            build_read(4, Some(2), Some(10)),
+        ];
+        let assigns = [
+            AlleleAssign::A0,
+            AlleleAssign::A0,
+            AlleleAssign::A1,
+            AlleleAssign::A1,
+        ];
+        for (sr, assign) in reads.iter_mut().zip(assigns) {
+            sr.assign = assign;
+        }
+
+        let pr = phase_by_hp_ps(&reads).expect("phase result should be produced");
+        assert_eq!(pr.phased_gt_digits, (0, 1));
+        assert_eq!(pr.ps, Some(10));
+    }
 }

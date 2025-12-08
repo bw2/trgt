@@ -161,6 +161,10 @@ impl BamWriter {
                 rec.push_aux(b"HP", Aux::U8(hp)).unwrap();
             }
 
+            if let Some(ps) = read.ps_tag {
+                rec.push_aux(b"PS", Aux::U32(ps)).unwrap();
+            }
+
             let start_offset = (read.ref_start - locus.region.start as i64) as i32;
             let end_offset = (read.ref_end - locus.region.end as i64) as i32;
 

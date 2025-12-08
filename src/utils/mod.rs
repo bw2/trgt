@@ -12,6 +12,8 @@ mod presets;
 pub mod read;
 pub mod readers;
 mod region;
+#[cfg(test)]
+pub mod test_util;
 pub mod util;
 
 pub use align::{align, TrgtScoring};

@@ -6,7 +6,7 @@ use crate::trvz::{
     align_consensus::align_motifs,
 };
 use crate::utils::{
-    locus::Locus,
+    locus::InputLocus,
     read::{project_betas, Beta, Betas, Read},
 };
 use crate::wfaligner::{AlignmentScope, MemoryModel, WFAligner, WfaAlign, WfaOp};
@@ -14,7 +14,7 @@ use itertools::Itertools;
 use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape};
 
 pub fn plot_waterfall(
-    locus: &Locus,
+    locus: &InputLocus,
     what_to_show: &str,
     reads: &[Read],
     params: &PlotParams,
@@ -33,7 +33,7 @@ pub fn plot_waterfall(
     plot(locus, what_to_show, &reads, params)
 }
 
-fn align(locus: &Locus, longest_read: usize, read: &Read) -> (Align, Vec<Beta>) {
+fn align(locus: &InputLocus, longest_read: usize, read: &Read) -> (Align, Vec<Beta>) {
     let lf_ref = &locus.left_flank;
     let rf_ref = &locus.right_flank;
 
@@ -180,7 +180,7 @@ fn convert(wfa_align: &WfaAlign, seg_type: SegType) -> Align {
 }
 
 pub fn plot(
-    locus: &Locus,
+    locus: &InputLocus,
     what_to_show: &str,
     reads: &[(Align, Vec<Beta>)],
     params: &PlotParams,

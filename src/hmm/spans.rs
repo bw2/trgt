@@ -23,3 +23,14 @@ pub struct Annotation {
     pub motif_counts: Vec<usize>,
     pub purity: f64,
 }
+
+impl Annotation {
+    #[cfg(test)]
+    pub fn base() -> Self {
+        Self {
+            labels: None,
+            motif_counts: vec![0],
+            purity: f64::NAN,
+        }
+    }
+}

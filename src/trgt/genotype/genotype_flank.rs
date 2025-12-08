@@ -13,6 +13,7 @@ pub fn genotype(
 ) -> Option<(Gt, Vec<Vec<u8>>, Vec<i32>)> {
     let (trs_by_allele, mut allele_assignment) = get_trs_with_hp(reads, tr_seqs)
         .or_else(|| get_trs_with_clustering(reads, tr_seqs, region))?;
+
     let mut gt = Gt::new();
     let mut alleles = Vec::new();
 
@@ -358,6 +359,7 @@ mod tests {
             mismatch_positions: Some(mismatch_positions),
             cigar: None,
             hp_tag: spec.hp_tag,
+            ps_tag: None,
             mapq: 60,
             ref_start: spec.ref_start,
             ref_end,
@@ -600,7 +602,7 @@ mod tests {
     #[test]
     fn snv_at_tr_start_is_ignored() {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
-        let reads = vec![LocusRead {
+        let reads = [LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
             bases: b"GATTACA".to_vec(),
@@ -614,6 +616,7 @@ mod tests {
             ]),
             cigar: None,
             hp_tag: None,
+            ps_tag: None,
             mapq: 60,
             ref_start: 90,
             ref_end: 120,
@@ -627,7 +630,7 @@ mod tests {
     #[test]
     fn snv_at_tr_end_is_used() {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
-        let reads = vec![LocusRead {
+        let reads = [LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
             bases: b"GATTACA".to_vec(),
@@ -642,6 +645,7 @@ mod tests {
             ]),
             cigar: None,
             hp_tag: None,
+            ps_tag: None,
             mapq: 60,
             ref_start: 90,
             ref_end: 120,
@@ -668,6 +672,7 @@ mod tests {
                 mismatch_positions: Some(vec![95, 115]),
                 cigar: None,
                 hp_tag: None,
+                ps_tag: None,
                 mapq: 60,
                 ref_start: 90,
                 ref_end: 120,
@@ -682,6 +687,7 @@ mod tests {
                 mismatch_positions: Some(vec![95]), // Has only first mismatch
                 cigar: None,
                 hp_tag: None,
+                ps_tag: None,
                 mapq: 60,
                 ref_start: 90,
                 ref_end: 120,
@@ -700,7 +706,7 @@ mod tests {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
         let snvs = vec![95, 115];
 
-        let reads = vec![LocusRead {
+        let reads = [LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
             bases: b"GATTACA".to_vec(),
@@ -710,6 +716,7 @@ mod tests {
             mismatch_positions: Some(vec![95]),
             cigar: None,
             hp_tag: None,
+            ps_tag: None,
             mapq: 60,
             ref_start: 96,
             ref_end: 114,
@@ -725,7 +732,7 @@ mod tests {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
         let snvs = vec![95, 115];
 
-        let reads = vec![LocusRead {
+        let reads = [LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
             bases: b"GATTACA".to_vec(),
@@ -735,6 +742,7 @@ mod tests {
             mismatch_positions: Some(vec![95]),
             cigar: None,
             hp_tag: None,
+            ps_tag: None,
             mapq: 60,
             ref_start: 90,
             ref_end: 114, // Does not cover second SNV
@@ -750,7 +758,7 @@ mod tests {
         let region = GenomicRegion::new("chr1", 100, 110).unwrap();
         let snvs = vec![95, 115];
 
-        let reads = vec![LocusRead {
+        let reads = [LocusRead {
             id: "read1".to_string(),
             is_reverse: false,
             bases: b"GATTACA".to_vec(),
@@ -760,6 +768,7 @@ mod tests {
             mismatch_positions: None,
             cigar: None,
             hp_tag: None,
+            ps_tag: None,
             mapq: 60,
             ref_start: 90,
             ref_end: 120,

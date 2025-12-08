@@ -11,7 +11,9 @@ pub fn merge(args: MergeArgs) -> Result<()> {
     }
 
     vcf_processor.merge_variants()?;
+    if args.write_index {
+        vcf_processor.write_index()?;
+    }
 
-    // TODO: If --output, --write-index is set and the output is compressed, index the file
     Ok(())
 }

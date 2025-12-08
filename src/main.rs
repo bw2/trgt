@@ -11,6 +11,8 @@ fn disable_htslib_logging() {
         log::debug!("TRGT_ENABLE_HTSLIB_LOGGING is set, keeping htslib logging enabled");
         return;
     }
+    // SAFETY: `hts_set_log_level` is an FFI call, we call it once at startup with a
+    // _valid_ constant to disable logging before any htslib use
     unsafe {
         use rust_htslib::htslib::{htsLogLevel_HTS_LOG_OFF, hts_set_log_level};
         hts_set_log_level(htsLogLevel_HTS_LOG_OFF);

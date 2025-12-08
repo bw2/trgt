@@ -75,6 +75,26 @@ impl Locus {
             reads: Vec::new(),
         })
     }
+
+    #[cfg(test)]
+    pub fn test_base() -> Self {
+        Self {
+            id: "locus".into(),
+            left_flank: b"A".to_vec(),
+            tr: b"T".to_vec(),
+            right_flank: b"C".to_vec(),
+            region: GenomicRegion {
+                contig: "chr1".into(),
+                start: 1,
+                end: 2,
+            },
+            motifs: vec![b"T".to_vec()],
+            struc: "1".into(),
+            ploidy: Ploidy::Two,
+            genotyper: Genotyper::Size,
+            reads: Vec::new(),
+        }
+    }
 }
 
 pub fn create_chrom_lookup(reader: &faidx::Reader) -> Result<HashMap<String, u32>> {

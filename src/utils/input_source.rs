@@ -8,6 +8,8 @@ use std::{
 };
 use url::Url;
 
+// TODO: If the index is not local, it will automatically be downloaded to the local filesystem, we might want to have a post-processing step to delete the index after use...
+
 fn redact_url(u: &Url) -> String {
     let mut redacted = u.clone();
     if !redacted.username().is_empty() || redacted.password().is_some() {

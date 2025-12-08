@@ -1,12 +1,12 @@
 use super::align::{AlignOp, AlignSeg};
 use crate::hmm::{build_hmm, get_events, remove_imperfect_motifs, HmmEvent};
 use crate::trvz::align::SegType;
-use crate::utils::locus::Locus;
+use crate::utils::locus::InputLocus;
 use itertools::Itertools;
 
 /// Aligns a given allele to a perfect repeat as specified by the locus
 /// definition
-pub fn align_consensus(locus: &Locus, consensus: &[u8]) -> Vec<AlignSeg> {
+pub fn align_consensus(locus: &InputLocus, consensus: &[u8]) -> Vec<AlignSeg> {
     let mut align = vec![AlignSeg {
         width: locus.left_flank.len(),
         op: AlignOp::Match,

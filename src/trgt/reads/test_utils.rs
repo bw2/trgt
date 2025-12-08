@@ -12,6 +12,7 @@ pub fn make_read(bases: &str, meths: Vec<u8>, cigar: Cigar) -> HiFiRead {
         mismatch_positions: None,
         cigar: Some(cigar),
         hp_tag: None,
+        ps_tag: None,
         mapq: 60,
         ref_start: 0,
         ref_end: 0,

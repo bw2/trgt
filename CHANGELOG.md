@@ -3,6 +3,15 @@
 
 Any changes to TRGT are noted below:
 
+## [5.0.0]
+- **Important changes**:
+  - Extended support for phased BAM inputs (from tool such as [HiPhase](https://github.com/PacificBiosciences/HiPhase)). TRGT can now output phased genotypes (e.g. `1|0`) and phase sets using HP/PS tags, when sufficient haplotype support is available.
+    - **Note:** the FORMAT field order remains unchanged after phasing, any downstream analysis that assumes positional indexing on genotypes must account for phasing.
+  - More robust and optimized VCF merging (`merge` subcommand).
+    - Added a streaming merge mode which avoids loading tabix/CSI indices. This mode is especially useful for merging very large cohorts and can be enabled with the `--no-index` flag. It significantly reduces memory requirements but it requires that all inputs have the exact same contig ordering.
+    - Compressed VCF/BCF output can now be automatically indexed after merging by setting the `--write-index` flag.
+    - Added the `--threads` flag to set the number of (de)compression threads for input/output VCF files.
+
 ## [4.1.0]
   - **Important changes**:
     - Experimental remote file support for most TRGT inputs (BAM/CRAM, reference FASTA, repeat catalogs, and VCF/BCF). See [remote file documentation](docs/remote_files.md) for more details.

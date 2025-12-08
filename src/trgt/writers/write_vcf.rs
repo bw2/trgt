@@ -5,17 +5,23 @@ use crate::trgt::{
     workflows::{Genotype, LocusResult},
 };
 use crate::utils::Result;
-use itertools::Itertools;
 use rust_htslib::{
     bam,
-    bcf::{self, record::GenotypeAllele, Format, Record},
+    bcf::{
+        self,
+        record::{GenotypeAllele, Numeric},
+        Format, Record,
+    },
 };
-use std::env;
+use std::{env, io::Write};
+
+#[cfg(test)]
+use rust_htslib::htslib;
 
 const MISSING_FLOAT: f32 = f32::from_bits(0x7F80_0001);
 
 /// Header lines defining the INFO and FORMAT fields for the VCF file.
-const VCF_LINES: [&str; 12] = [
+const VCF_LINES: [&str; 13] = [
     r#"##INFO=<ID=TRID,Number=1,Type=String,Description="Tandem repeat ID">"#,
     r#"##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">"#,
     r#"##INFO=<ID=MOTIFS,Number=.,Type=String,Description="Motifs that the tandem repeat is composed of">"#,
@@ -28,12 +34,15 @@ const VCF_LINES: [&str; 12] = [
     r#"##FORMAT=<ID=MS,Number=.,Type=String,Description="Motif spans per allele">"#,
     r#"##FORMAT=<ID=AP,Number=.,Type=Float,Description="Allele purity per allele">"#,
     r#"##FORMAT=<ID=AM,Number=.,Type=Float,Description="Mean methylation level per allele">"#,
+    r#"##FORMAT=<ID=PS,Number=1,Type=Integer,Description="Phase set identifier">"#,
 ];
 
 /// Structure for writing VCF records from genotyping results.
 pub struct VcfWriter {
     /// The VCF writer used to write records to the VCF file.
     writer: bcf::Writer,
+    /// Reusable record to avoid allocation on every write.
+    record: Record,
 }
 
 impl VcfWriter {
@@ -82,7 +91,9 @@ impl VcfWriter {
         let writer = bcf::Writer::from_path(output_path, &vcf_header, false, Format::Vcf)
             .map_err(|_| format!("Invalid VCF output path: {}", output_path))?;
 
-        Ok(VcfWriter { writer })
+        let record = writer.empty_record();
+
+        Ok(VcfWriter { writer, record })
     }
 
     /// Writes a VCF record for a given locus and its genotyping results.
@@ -91,14 +102,14 @@ impl VcfWriter {
     /// * `locus` - `Locus` struct containing locus information.
     /// * `results` - `LocusResult` struct containing genotyping results.
     pub fn write(&mut self, locus: &Locus, results: &LocusResult) {
-        let mut record = self.writer.empty_record();
-        self.add_locus_info(locus, &mut record);
-        if !results.genotype.is_empty() {
-            self.add_allele_info(locus, results, &mut record);
+        self.record.clear();
+        VcfWriter::add_locus_info(&self.writer, locus, &mut self.record);
+        if results.genotype.is_empty() {
+            VcfWriter::add_missing_allele_info(locus, &mut self.record);
         } else {
-            self.add_missing_allele_info(locus, &mut record);
+            VcfWriter::add_allele_info(locus, results, &mut self.record);
         }
-        self.writer.write(&record).unwrap();
+        self.writer.write(&self.record).unwrap();
     }
 
     /// Adds basic locus information to a VCF record.
@@ -106,9 +117,9 @@ impl VcfWriter {
     /// # Arguments
     /// * `locus` - `Locus` struct containing locus information.
     /// * `record` - Mutable `Record` struct where the information will be added.
-    fn add_locus_info(&mut self, locus: &Locus, record: &mut Record) {
+    fn add_locus_info(writer: &bcf::Writer, locus: &Locus, record: &mut Record) {
         let contig = locus.region.contig.as_bytes();
-        let rid = self.writer.header().name2rid(contig).unwrap_or_else(|_| {
+        let rid = writer.header().name2rid(contig).unwrap_or_else(|_| {
             panic!("Contig {:?} not present in VCF header", locus.region.contig)
         });
         record.set_rid(Some(rid));
@@ -139,7 +150,7 @@ impl VcfWriter {
     /// # Arguments
     /// * `locus` - `Locus` struct containing locus information.
     /// * `record` - Mutable `Record` struct where the information will be added.
-    fn add_missing_allele_info(&mut self, locus: &Locus, record: &mut Record) {
+    fn add_missing_allele_info(locus: &Locus, record: &mut Record) {
         let pad_base = *locus
             .left_flank
             .last()
@@ -153,15 +164,24 @@ impl VcfWriter {
             .push_genotypes(&[GenotypeAllele::UnphasedMissing])
             .unwrap();
 
-        record.push_format_string(b"AL", &[".".as_bytes()]).unwrap();
+        record
+            .push_format_integer(b"AL", &[<i32 as Numeric>::missing()])
+            .unwrap();
         record
             .push_format_string(b"ALLR", &[".".as_bytes()])
             .unwrap();
-        record.push_format_string(b"SD", &[".".as_bytes()]).unwrap();
+        record
+            .push_format_integer(b"SD", &[<i32 as Numeric>::missing()])
+            .unwrap();
         record.push_format_string(b"MC", &[".".as_bytes()]).unwrap();
         record.push_format_string(b"MS", &[".".as_bytes()]).unwrap();
-        record.push_format_string(b"AP", &[".".as_bytes()]).unwrap();
-        record.push_format_string(b"AM", &[".".as_bytes()]).unwrap();
+        record
+            .push_format_float(b"AP", &[<f32 as Numeric>::missing()])
+            .unwrap();
+        record
+            .push_format_float(b"AM", &[<f32 as Numeric>::missing()])
+            .unwrap();
+        // The PS field is optional; omit it for missing genotypes.
     }
 
     /// Adds allele information from genotyping results to a VCF record.
@@ -172,43 +192,35 @@ impl VcfWriter {
     /// * `record` - Mutable `Record` struct where the information will be added.
     ///
     /// This method encodes the genotype information and adds it to the VCF record.
-    fn add_allele_info(&mut self, locus: &Locus, results: &LocusResult, record: &mut Record) {
-        VcfWriter::set_gt(locus, results, record);
-
-        let data = VcfWriter::encode_al(&results.genotype);
+    fn add_allele_info(locus: &Locus, results: &LocusResult, record: &mut Record) {
+        let ps_to_write = VcfWriter::set_gt(locus, results, record);
         record
-            .push_format_string(b"AL", &[data.as_bytes()])
+            .push_format_integer(b"AL", &VcfWriter::encode_al(&results.genotype))
+            .unwrap();
+        record
+            .push_format_string(b"ALLR", &[VcfWriter::encode_allr(&results.genotype)])
+            .unwrap();
+        record
+            .push_format_integer(b"SD", &VcfWriter::encode_hd(&results.genotype))
+            .unwrap();
+        record
+            .push_format_string(b"MC", &[VcfWriter::encode_mc(&results.genotype)])
+            .unwrap();
+        record
+            .push_format_string(b"MS", &[VcfWriter::encode_ms(&results.genotype)])
+            .unwrap();
+        record
+            .push_format_float(b"AP", &VcfWriter::encode_ap(&results.genotype))
+            .unwrap();
+        record
+            .push_format_float(b"AM", &VcfWriter::encode_am(&results.genotype))
             .unwrap();
 
-        let data = VcfWriter::encode_allr(&results.genotype);
-        record
-            .push_format_string(b"ALLR", &[data.as_bytes()])
-            .unwrap();
-
-        let data = VcfWriter::encode_hd(&results.genotype);
-        record
-            .push_format_string(b"SD", &[data.as_bytes()])
-            .unwrap();
-
-        let data = VcfWriter::encode_mc(&results.genotype);
-        record
-            .push_format_string(b"MC", &[data.as_bytes()])
-            .unwrap();
-
-        let data = VcfWriter::encode_ms(&results.genotype);
-        record
-            .push_format_string(b"MS", &[data.as_bytes()])
-            .unwrap();
-
-        let data = VcfWriter::encode_ap(&results.genotype);
-        record
-            .push_format_string(b"AP", &[data.as_bytes()])
-            .unwrap();
-
-        let data = VcfWriter::encode_am(&results.genotype);
-        record
-            .push_format_string(b"AM", &[data.as_bytes()])
-            .unwrap();
+        if let Some(ps) = ps_to_write {
+            record
+                .push_format_integer(b"PS", &[ps])
+                .expect("Failed to set PS");
+        }
     }
 
     /// This method encodes the genotype information and adds it to the VCF record.
@@ -220,25 +232,25 @@ impl VcfWriter {
     ///
     /// This method constructs the genotype (GT) field for the VCF record by comparing the genotyped alleles
     /// to the reference tandem repeat sequence. It assigns allele indexes and encodes them in VCF format.
-    fn set_gt(locus: &Locus, results: &LocusResult, record: &mut Record) {
-        let mut seqs = vec![locus.tr.as_slice()];
-        let mut indexes = Vec::with_capacity(2);
-
+    /// It returns the phase set identifier to write to the PS field, if any. The PS field is written after all other format fields.
+    fn set_gt(locus: &Locus, results: &LocusResult, record: &mut Record) -> Option<i32> {
         let gt = &results.genotype;
-        for allele in gt {
-            if allele.seq == locus.tr {
-                indexes.push(GenotypeAllele::Unphased(0));
-                continue;
-            }
+        let mut seqs = vec![locus.tr.as_slice()];
+        let mut allele_to_vcf_digit = Vec::with_capacity(gt.len());
 
-            if seqs.len() == 1 {
-                indexes.push(GenotypeAllele::Unphased(1));
+        for allele in gt.iter() {
+            if allele.seq == locus.tr {
+                allele_to_vcf_digit.push(0);
+            } else if seqs.len() == 1 {
                 seqs.push(allele.seq.as_slice());
-            } else if gt[0].seq == gt[1].seq {
-                indexes.push(GenotypeAllele::Unphased(1));
+                allele_to_vcf_digit.push(1);
+            } else if gt.len() == 2 && gt[0].seq == gt[1].seq {
+                allele_to_vcf_digit.push(1);
             } else {
-                indexes.push(GenotypeAllele::Unphased(2));
-                seqs.push(allele.seq.as_slice());
+                if seqs.len() == 2 {
+                    seqs.push(allele.seq.as_slice());
+                }
+                allele_to_vcf_digit.push(2);
             }
         }
 
@@ -246,7 +258,6 @@ impl VcfWriter {
             .left_flank
             .last()
             .expect("Empty flanks are not allowed");
-
         let padded_seqs: Vec<Vec<u8>> = seqs
             .iter()
             .map(|s| {
@@ -256,150 +267,273 @@ impl VcfWriter {
                 v
             })
             .collect();
-
         let encoding: Vec<&[u8]> = padded_seqs.iter().map(Vec::as_slice).collect();
-
         record
             .set_alleles(&encoding)
             .expect("Failed to set alleles");
-        record.push_genotypes(&indexes).unwrap();
-    }
 
-    /// Encodes the allele lengths as a comma-separated string.
-    ///
-    /// # Arguments
-    /// * `results` - `Genotype` struct containing the alleles.
-    ///
-    /// # Returns
-    /// Returns a `String` with the encoded allele lengths.
-    fn encode_al(results: &Genotype) -> String {
-        let mut encoding = String::new();
-        for hap in results {
-            if !encoding.is_empty() {
-                encoding += ",";
+        let phase_info = results.phase_result.as_ref().and_then(|pr| {
+            if gt.len() != 2 {
+                return None;
             }
-            encoding += &hap.seq.len().to_string();
-        }
-        encoding
-    }
-
-    /// Encodes the motif counts for each allele.
-    ///
-    /// # Arguments
-    /// * `genotype` - `Genotype` struct containing the alleles.
-    ///
-    /// # Returns
-    /// Returns a `String` with the encoded motif counts.
-    fn encode_mc(genotype: &Genotype) -> String {
-        let mut encoding = Vec::new();
-        for allele in genotype {
-            encoding.push(
-                allele
-                    .annotation
-                    .motif_counts
-                    .iter()
-                    .map(|c| c.to_string())
-                    .join("_"),
-            );
-        }
-        encoding.join(",")
-    }
-    /// Encodes the motif spans for each allele.
-    ///
-    /// # Arguments
-    /// * `results` - `Genotype` struct containing the alleles.
-    ///
-    /// # Returns
-    /// Returns a `String` with the encoded motif spans.
-    fn encode_ms(results: &Genotype) -> String {
-        let mut encoding = String::new();
-        for hap in results {
-            let sizes = match &hap.annotation.labels {
-                None => vec![".".to_string()],
-                Some(value) => value
-                    .iter()
-                    .map(|s| format!("{}({}-{})", s.motif_index, s.start, s.end))
-                    .collect_vec(),
+            let (idx_a, idx_b) = pr.phased_gt_digits;
+            let (Some(&a), Some(&b)) = (
+                allele_to_vcf_digit.get(idx_a as usize),
+                allele_to_vcf_digit.get(idx_b as usize),
+            ) else {
+                return None;
             };
-            if !encoding.is_empty() {
-                encoding += ",";
-            }
-            encoding += &sizes.join("_");
-        }
-        encoding
+            (a != b).then_some((a, b, pr.ps))
+        });
+
+        let mut gt_field: Vec<GenotypeAllele> = Vec::with_capacity(allele_to_vcf_digit.len());
+        let ps_to_write = if let Some((a, b, ps)) = phase_info {
+            gt_field.push(GenotypeAllele::Phased(a));
+            gt_field.push(GenotypeAllele::Phased(b));
+            ps.map(|v| v as i32)
+        } else {
+            gt_field.extend(
+                allele_to_vcf_digit
+                    .iter()
+                    .copied()
+                    .map(GenotypeAllele::Unphased),
+            );
+            None
+        };
+
+        record.push_genotypes(&gt_field).unwrap();
+        ps_to_write
     }
 
-    /// Encodes the allele purity for each allele.
-    ///
-    /// # Arguments
-    /// * `genotype` - `Genotype` struct containing the alleles.
-    ///
-    /// # Returns
-    /// Returns a `String` with the encoded allele purities.
-    fn encode_ap(genotype: &Genotype) -> String {
+    fn encode_al(genotype: &Genotype) -> Vec<i32> {
         genotype
             .iter()
-            .map(|a| {
-                if a.annotation.purity.is_nan() {
-                    ".".to_string()
-                } else {
-                    format!("{:.6}", a.annotation.purity)
-                }
+            .map(|allele| {
+                i32::try_from(allele.seq.len())
+                    .expect("allele length should fit in i32 format field")
             })
-            .join(",")
+            .collect()
     }
 
-    /// Encodes the length range for each allele.
-    ///
-    /// # Arguments
-    /// * `results` - `Genotype` struct containing the alleles.
-    ///
-    /// # Returns
-    /// Returns a `String` with the encoded length ranges.
-    fn encode_allr(results: &Genotype) -> String {
-        let mut encoding = Vec::new();
-        for hap in results {
-            encoding.push(format!("{}-{}", hap.ci.0, hap.ci.1));
-        }
-        encoding.join(",")
-    }
-
-    /// Encodes the number of spanning reads supporting each allele.
-    ///
-    /// # Arguments
-    /// * `results` - `Genotype` struct containing the alleles.
-    ///
-    /// # Returns
-    /// Returns a `String` with the encoded number of spanning reads.
-    fn encode_hd(results: &Genotype) -> String {
-        let mut encoding = String::new();
-        for hap in results {
-            if !encoding.is_empty() {
-                encoding += ",";
+    fn encode_allr(genotype: &Genotype) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (idx, allele) in genotype.iter().enumerate() {
+            if idx > 0 {
+                buf.push(b',');
             }
-            encoding += &hap.num_spanning.to_string();
+            write!(&mut buf, "{}-{}", allele.ci.0, allele.ci.1).unwrap();
         }
-        encoding
+        buf
     }
 
-    /// Encodes the mean methylation level for each allele.
-    ///
-    /// # Arguments
-    /// * `results` - `Genotype` struct containing the alleles.
-    ///
-    /// # Returns
-    /// Returns a `String` with the encoded mean methylation levels.
-    fn encode_am(results: &Genotype) -> String {
-        let mut encoding = String::new();
-        for hap in results {
-            if !encoding.is_empty() {
-                encoding += ",";
+    fn encode_hd(genotype: &Genotype) -> Vec<i32> {
+        genotype
+            .iter()
+            .map(|allele| {
+                i32::try_from(allele.num_spanning)
+                    .expect("spanning read count should fit in i32 format field")
+            })
+            .collect()
+    }
+
+    fn encode_mc(genotype: &Genotype) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (idx, allele) in genotype.iter().enumerate() {
+            if idx > 0 {
+                buf.push(b',');
             }
-            encoding += &match hap.meth {
-                Some(value) => format!("{:.2}", value),
-                None => ".".to_string(),
-            };
+            for (mc_idx, count) in allele.annotation.motif_counts.iter().enumerate() {
+                if mc_idx > 0 {
+                    buf.push(b'_');
+                }
+                write!(&mut buf, "{}", count).unwrap();
+            }
         }
-        encoding
+        buf
+    }
+
+    fn encode_ms(genotype: &Genotype) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (idx, allele) in genotype.iter().enumerate() {
+            if idx > 0 {
+                buf.push(b',');
+            }
+            match &allele.annotation.labels {
+                None => buf.push(b'.'),
+                Some(v) => {
+                    for (lab_idx, s) in v.iter().enumerate() {
+                        if lab_idx > 0 {
+                            buf.push(b'_');
+                        }
+                        write!(&mut buf, "{}({}-{})", s.motif_index, s.start, s.end).unwrap();
+                    }
+                }
+            }
+        }
+        buf
+    }
+
+    fn encode_ap(genotype: &Genotype) -> Vec<f32> {
+        genotype
+            .iter()
+            .map(|allele| match allele.annotation.purity {
+                x if x.is_nan() => <f32 as Numeric>::missing(),
+                x => ((x * 1_000_000.0).round() / 1_000_000.0) as f32,
+            })
+            .collect()
+    }
+
+    fn encode_am(genotype: &Genotype) -> Vec<f32> {
+        genotype
+            .iter()
+            .map(|allele| match allele.meth {
+                Some(x) => ((x * 100.0).round() / 100.0) as f32,
+                None => <f32 as Numeric>::missing(),
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn record_ptr(&self) -> *mut htslib::bcf1_t {
+        self.record.inner
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        trgt::workflows::{Allele, PhaseResult},
+        utils::test_util::TestVcfBuilder,
+    };
+    use rust_htslib::{
+        bam::{self, header::HeaderRecord},
+        bcf::{self, Read as BcfRead, Reader, Writer},
+    };
+    use tempfile::NamedTempFile;
+
+    fn empty_record() -> Record {
+        let tmp = NamedTempFile::new().unwrap();
+        let header = TestVcfBuilder::new()
+            .contig("chr1", 10)
+            .add_format("PS", "1", "Integer", "Phase set identifier")
+            .sample("sample")
+            .build_header();
+        let writer = Writer::from_path(tmp.path(), &header, false, bcf::Format::Vcf).unwrap();
+        writer.empty_record()
+    }
+
+    #[test]
+    fn test_phased_het_writes_phased_gt_and_ps() {
+        let locus = Locus::test_base();
+        let mut genotype = Genotype::new();
+        genotype.push(Allele::test_base(&locus.tr));
+        genotype.push(Allele::test_base(b"TT"));
+
+        let results = LocusResult {
+            genotype,
+            spanning_reads: Vec::new(),
+            phase_result: Some(PhaseResult {
+                phased_gt_digits: (0, 1),
+                ps: Some(10),
+            }),
+        };
+
+        let mut record = empty_record();
+        if let Some(ps) = VcfWriter::set_gt(&locus, &results, &mut record) {
+            record
+                .push_format_integer(b"PS", &[ps])
+                .expect("Failed to set PS");
+        }
+
+        let gt = record.genotypes().unwrap();
+        assert_eq!("0|1", format!("{}", gt.get(0)));
+        let ps = record.format(b"PS").integer().unwrap();
+        assert_eq!(ps[0][0], 10);
+    }
+
+    #[test]
+    fn test_hom_remains_unphased() {
+        let locus = Locus::test_base();
+        let mut genotype = Genotype::new();
+        genotype.push(Allele::test_base(b"TT"));
+        genotype.push(Allele::test_base(b"TT"));
+        let results = LocusResult {
+            genotype,
+            spanning_reads: Vec::new(),
+            phase_result: Some(PhaseResult {
+                phased_gt_digits: (0, 1),
+                ps: Some(7),
+            }),
+        };
+
+        let mut record = empty_record();
+        if let Some(ps) = VcfWriter::set_gt(&locus, &results, &mut record) {
+            record
+                .push_format_integer(b"PS", &[ps])
+                .expect("Failed to set PS");
+        }
+
+        let gt = record.genotypes().unwrap();
+        assert_eq!("1/1", format!("{}", gt.get(0)));
+        assert!(record.format(b"PS").integer().is_err());
+    }
+
+    #[test]
+    fn test_cached_record_reuse() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut bam_header = bam::Header::new();
+        let mut sq = HeaderRecord::new(b"SQ");
+        sq.push_tag(b"SN", "chr1");
+        sq.push_tag(b"LN", 10);
+        bam_header.push_record(&sq);
+
+        let mut writer =
+            VcfWriter::new(tmp.path().to_str().unwrap(), "sample", &bam_header).unwrap();
+
+        let locus = Locus::test_base();
+        let mut genotype = Genotype::new();
+        genotype.push(Allele::test_base(&locus.tr));
+        genotype.push(Allele::test_base(b"TT"));
+        let phased = LocusResult {
+            genotype,
+            spanning_reads: Vec::new(),
+            phase_result: Some(PhaseResult {
+                phased_gt_digits: (0, 1),
+                ps: Some(5),
+            }),
+        };
+
+        let first_ptr = writer.record_ptr();
+        writer.write(&locus, &phased);
+        let after_first_ptr = writer.record_ptr();
+
+        let mut second_locus = Locus::test_base();
+        second_locus.id = "locus2".into();
+        second_locus.region.start = 3;
+        second_locus.region.end = 4;
+        let mut second_genotype = Genotype::new();
+        second_genotype.push(Allele::test_base(&second_locus.tr));
+        second_genotype.push(Allele::test_base(b"TTT"));
+        let unphased = LocusResult {
+            genotype: second_genotype,
+            spanning_reads: Vec::new(),
+            phase_result: None,
+        };
+
+        writer.write(&second_locus, &unphased);
+        let after_second_ptr = writer.record_ptr();
+        drop(writer);
+
+        let mut reader = Reader::from_path(tmp.path()).unwrap();
+        let mut records = reader.records();
+        let first = records.next().unwrap().unwrap();
+        let second = records.next().unwrap().unwrap();
+        assert!(first.format(b"PS").integer().is_ok());
+        assert!(second.format(b"PS").integer().is_err());
+        assert!(records.next().is_none());
+
+        assert_eq!(first_ptr, after_first_ptr);
+        assert_eq!(first_ptr, after_second_ptr);
     }
 }
