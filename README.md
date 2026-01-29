@@ -33,6 +33,8 @@ This fork takes the [official version of TRGT](https://github.com/pacificBioscie
 
 #### Deep Dive:
 
+Included here for comparison. Deep dive functionality is unchanged.
+
 <img width="1571" height="294" alt="image" src="https://github.com/user-attachments/assets/b2102081-a9c6-4a6c-88b4-5997d3381d99" />
 
 
