@@ -176,13 +176,16 @@ pub fn plot_alleles(
     }
 
     let mut labels = Vec::new();
-    for (index, motif) in locus.motifs.iter().enumerate() {
-        let color = params.colors.get(&SegType::Tr(index)).unwrap().to_string();
-        labels.push((std::str::from_utf8(motif).unwrap().to_string(), color));
-    }
     if what_to_show == "meth" {
+        // Only show methylation legend for meth plots
         labels.push(("Methylated".to_string(), Color::Grad(1.0).to_string()));
         labels.push(("Unmethylated".to_string(), Color::Grad(0.0).to_string()));
+    } else {
+        // Show motif legend for non-meth plots
+        for (index, motif) in locus.motifs.iter().enumerate() {
+            let color = params.colors.get(&SegType::Tr(index)).unwrap().to_string();
+            labels.push((std::str::from_utf8(motif).unwrap().to_string(), color));
+        }
     }
 
     ypos += 1;

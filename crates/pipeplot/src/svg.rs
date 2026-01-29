@@ -272,7 +272,7 @@ impl Generator {
         &mut self,
         pos: (f64, f64),
         dims: (f64, f64),
-        color: &Color,
+        _color: &Color,
         stroke: f64,
         label: &Option<String>,
         font: &FontConfig,
@@ -281,10 +281,17 @@ impl Generator {
         let x2 = pos.0 + dims.0;
         let y_center = pos.1 + dims.1 / 2.0;
 
+        // Use dark gray color for lower contrast
+        let arrow_color = "#888888";
+
         let x1y1 = format!("x1=\"{}\" y1=\"{}\"", x1, y_center);
         let x2y2 = format!("x2=\"{}\" y2=\"{}\"", x2, y_center);
 
-        let style = format!("stroke=\"{}\" stroke-width=\"{}\"", color, stroke);
+        // Dashed line with long dashes (10px dash, 5px gap)
+        let style = format!(
+            r##"stroke="{}" stroke-width="{}" stroke-dasharray="10,5""##,
+            arrow_color, stroke
+        );
 
         // Draw the arrow line first (behind the label)
         let line = format!("<line {} {} {} />", x1y1, x2y2, style);
@@ -293,13 +300,17 @@ impl Generator {
         let arrow_pt1 = format!("{} {}", x1, y_center);
         let arrow_pt2 = format!("{} {}", x1 + 5.0, y_center + 5.0);
         let arrow_pt3 = format!("{} {}", x1 + 5.0, y_center - 5.0);
-        let left_arrow = format!("<polygon points=\"{arrow_pt1}, {arrow_pt2}, {arrow_pt3}\"/>");
+        let left_arrow = format!(
+            r##"<polygon points="{arrow_pt1}, {arrow_pt2}, {arrow_pt3}" fill="{arrow_color}"/>"##
+        );
         self.add_line(&left_arrow);
 
         let arrow_pt1 = format!("{} {}", x2, y_center);
         let arrow_pt2 = format!("{} {}", x2 - 5.0, y_center - 5.0);
         let arrow_pt3 = format!("{} {}", x2 - 5.0, y_center + 5.0);
-        let right_arrow = format!("<polygon points=\"{arrow_pt1}, {arrow_pt2}, {arrow_pt3}\"/>");
+        let right_arrow = format!(
+            r##"<polygon points="{arrow_pt1}, {arrow_pt2}, {arrow_pt3}" fill="{arrow_color}"/>"##
+        );
         self.add_line(&right_arrow);
 
         if let Some(label) = label {
