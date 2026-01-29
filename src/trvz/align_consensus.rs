@@ -1,8 +1,10 @@
 use super::align::{AlignOp, AlignSeg};
+use super::params::base_color;
 use crate::hmm::{build_hmm, get_events, remove_imperfect_motifs, HmmEvent};
 use crate::trvz::align::SegType;
 use crate::utils::locus::InputLocus;
 use itertools::Itertools;
+use pipeplot::TextLabel;
 
 /// Aligns a given allele to a perfect repeat as specified by the locus
 /// definition
@@ -113,4 +115,79 @@ pub fn align_motifs(motifs: &[Vec<u8>], seq: &[u8]) -> Vec<AlignSeg> {
     }
 
     merged_align
+}
+
+/// Align sequence to motifs and return both alignment and mismatch labels
+pub fn align_motifs_with_labels(
+    motifs: &[Vec<u8>],
+    seq: &[u8],
+    offset: usize,
+) -> (Vec<AlignSeg>, Vec<TextLabel>) {
+    if seq.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let hmm = build_hmm(motifs);
+    let states = hmm.label(seq);
+    let states = remove_imperfect_motifs(&hmm, motifs, &states, seq, 6);
+    let events = get_events(&hmm, motifs, &states, seq);
+
+    let mut labels = Vec::new();
+    let mut base_pos: usize = 0;
+    let mut pipe_pos: usize = offset;
+
+    // Iterate through events to extract mismatch positions
+    for (event, group) in &events.iter().chunk_by(|e| *e) {
+        let width = group.count();
+        match event {
+            HmmEvent::Match => {
+                // Match consumes bases and pipe positions
+                base_pos += width;
+                pipe_pos += width;
+            }
+            HmmEvent::Mismatch => {
+                // Mismatch - emit labels for each base
+                for i in 0..width {
+                    let base = seq[base_pos + i];
+                    labels.push(TextLabel {
+                        pos: (pipe_pos + i) as u32,
+                        text: base as char,
+                        color: base_color(base).to_string(),
+                    });
+                }
+                base_pos += width;
+                pipe_pos += width;
+            }
+            HmmEvent::Skip => {
+                // Skip state matches bases outside of any motif run - treat as mismatch
+                for i in 0..width {
+                    let base = seq[base_pos + i];
+                    labels.push(TextLabel {
+                        pos: (pipe_pos + i) as u32,
+                        text: base as char,
+                        color: base_color(base).to_string(),
+                    });
+                }
+                base_pos += width;
+                pipe_pos += width;
+            }
+            HmmEvent::Ins => {
+                // Insertion in read vs motif pattern - consumes base and pipe position
+                // (align_motifs maps this to AlignOp::Del with width, which advances pipe)
+                base_pos += width;
+                pipe_pos += width;
+            }
+            HmmEvent::Del => {
+                // Deletion - no base consumed, no label
+            }
+            HmmEvent::MotifStart | HmmEvent::MotifEnd | HmmEvent::Trans => {
+                // Silent states - no bases consumed
+            }
+        }
+    }
+
+    // Get the alignment segments from existing code
+    let align = align_motifs(motifs, seq);
+
+    (align, labels)
 }

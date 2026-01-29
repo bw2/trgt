@@ -5,9 +5,9 @@ use crate::utils::{locus::InputLocus, read::Read};
 
 pub fn get_allele_align(locus: &InputLocus, consensus: &[u8], reads: &[&Read]) -> AlleleAlign {
     let consensus_align = align_consensus(locus, consensus);
-    let read_aligns = align_reads(consensus, &consensus_align, reads);
+    let reads = align_reads(consensus, &consensus_align, reads);
     AlleleAlign {
         seq: consensus_align,
-        reads: read_aligns,
+        reads,
     }
 }

@@ -1,9 +1,10 @@
 use crate::utils::read::Betas;
+use pipeplot::TextLabel;
 
 #[derive(Debug, Clone)]
 pub struct AlleleAlign {
     pub seq: Align,
-    pub reads: Vec<(Align, Betas)>,
+    pub reads: Vec<(Align, Betas, Vec<TextLabel>)>,
 }
 
 pub type Align = Vec<AlignSeg>;

@@ -1,30 +1,35 @@
 use super::align::{Align, AlignOp, AlignSeg};
+use super::params::base_color;
 use crate::utils::read::{project_betas, Betas, Read};
 use crate::wfaligner::{AlignmentScope, MemoryModel, WFAligner, WfaAlign, WfaOp};
 use itertools::Itertools;
+use pipeplot::TextLabel;
 
 /// Align reads to the consensus sequence
 pub fn align_reads(
     consensus: &[u8],
     consensus_align: &[AlignSeg],
     reads: &[&Read],
-) -> Vec<(Align, Betas)> {
+) -> Vec<(Align, Betas, Vec<TextLabel>)> {
     let mut aligner = WFAligner::builder(AlignmentScope::Alignment, MemoryModel::MemoryHigh)
         .affine(2, 5, 1)
         .build();
 
-    let mut ret: Vec<(Align, Betas, i32, usize)> = reads
+    let mut ret: Vec<(Align, Betas, Vec<TextLabel>, i32, usize)> = reads
         .iter()
         .map(|read| {
             let _status = aligner.align_end_to_end(consensus, &read.seq);
             let wfa_align = aligner.get_alignment();
             let align = convert(consensus_align, &wfa_align);
             let betas = project_betas(&wfa_align, &read.betas);
-            (align, betas, wfa_align.score, read.seq.len())
+            let labels = get_mismatch_labels(&read.seq, &wfa_align);
+            (align, betas, labels, wfa_align.score, read.seq.len())
         })
         .collect();
-    ret.sort_by_key(|r| (r.3, std::cmp::Reverse(r.2)));
-    ret.iter().map(|r| (r.0.clone(), r.1.clone())).collect()
+    ret.sort_by_key(|r| (r.4, std::cmp::Reverse(r.3)));
+    ret.iter()
+        .map(|r| (r.0.clone(), r.1.clone(), r.2.clone()))
+        .collect()
 }
 
 /// Convert a WFA alignment into an internal alignment
@@ -110,4 +115,38 @@ fn convert(consensus_align: &[AlignSeg], wfa_align: &WfaAlign) -> Align {
     );
 
     align
+}
+
+/// Generate text labels for bases that differ from consensus
+fn get_mismatch_labels(read_seq: &[u8], wfa_align: &WfaAlign) -> Vec<TextLabel> {
+    let mut labels = Vec::new();
+    let mut cons_pos = 0usize;
+    let mut read_pos = 0usize;
+
+    for op in &wfa_align.operations {
+        match op {
+            WfaOp::Match => {
+                cons_pos += 1;
+                read_pos += 1;
+            }
+            WfaOp::Subst => {
+                let base = read_seq[read_pos];
+                labels.push(TextLabel {
+                    pos: cons_pos as u32,
+                    text: base as char,
+                    color: base_color(base).to_string(),
+                });
+                cons_pos += 1;
+                read_pos += 1;
+            }
+            WfaOp::Del => {
+                cons_pos += 1;
+            }
+            WfaOp::Ins => {
+                read_pos += 1;
+            }
+        }
+    }
+
+    labels
 }

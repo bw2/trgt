@@ -1,11 +1,54 @@
 use super::align::SegType;
 use super::align_allele::get_allele_align;
-use super::params::{get_meth_colors, Color, ColorMap, PlotParams};
-use super::scale::get_scale;
+use super::params::{base_color, get_meth_colors, Color, ColorMap, PlotParams};
+use super::scale::get_multi_scale;
 use crate::trvz::align::{Align, AlignOp};
 use crate::utils::{locus::InputLocus, read::Betas, read::Read};
 use itertools::Itertools;
-use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape};
+use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape, TextLabel};
+
+/// Map sequence positions to alignment (pipe) positions
+/// Returns a vector where result[seq_idx] = pipe_x_position
+fn build_seq_to_pipe_map(align: &Align) -> Vec<u32> {
+    let mut map = Vec::new();
+    let mut pipe_x: u32 = 0;
+
+    for seg in align {
+        match seg.op {
+            AlignOp::Match | AlignOp::Subst | AlignOp::Del => {
+                // For consensus align, Del == HMM Ins: consumes sequence and pipe
+                for _ in 0..seg.width {
+                    map.push(pipe_x);
+                    pipe_x += 1;
+                }
+            }
+            AlignOp::Ins => {
+                // Insertions in alignment consume sequence but no pipe (width is 0 today)
+            }
+        }
+    }
+
+    map
+}
+
+/// Generate text labels for the consensus sequence (all bases)
+/// Uses alignment to map sequence positions to pipe positions
+fn get_consensus_labels(allele_seq: &[u8], align: &Align) -> Vec<TextLabel> {
+    let seq_to_pipe = build_seq_to_pipe_map(align);
+
+    allele_seq
+        .iter()
+        .enumerate()
+        .filter_map(|(seq_idx, &base)| {
+            // Only emit label if we have a valid pipe position
+            seq_to_pipe.get(seq_idx).map(|&pipe_pos| TextLabel {
+                pos: pipe_pos,
+                text: base as char,
+                color: base_color(base).to_string(),
+            })
+        })
+        .collect()
+}
 
 pub fn plot_alleles(
     locus: &InputLocus,
@@ -14,7 +57,7 @@ pub fn plot_alleles(
     reads: &[Read],
     params: PlotParams,
 ) -> PipePlot {
-    let aligns_by_allele = allele_seqs
+    let aligns_by_allele: Vec<_> = allele_seqs
         .iter()
         .enumerate()
         .map(|(index, allele_seq)| {
@@ -22,17 +65,19 @@ pub fn plot_alleles(
                 .iter()
                 .filter(|r| r.allele == index as i32)
                 .collect_vec();
-            get_allele_align(locus, allele_seq, &allele_reads)
+            (allele_seq, get_allele_align(locus, allele_seq, &allele_reads))
         })
-        .collect_vec();
+        .collect();
     let allele_height = 4;
     let xpos = 0;
     let mut ypos = 0;
     let mut pipes = Vec::new();
-    for (allele_index, allele) in aligns_by_allele.iter().enumerate() {
-        let pipe = get_scale(xpos, ypos, allele_height, &allele.seq);
-        pipes.push(pipe);
+    let num_motifs = locus.motifs.len();
+    for (allele_index, (allele_seq, allele)) in aligns_by_allele.iter().enumerate() {
+        let scale_pipes = get_multi_scale(xpos, ypos, allele_height, &allele.seq, locus);
+        pipes.extend(scale_pipes);
         ypos += allele_height;
+        let consensus_labels = get_consensus_labels(allele_seq, &allele.seq);
         let pipe = get_pipe(
             xpos,
             ypos,
@@ -41,6 +86,8 @@ pub fn plot_alleles(
             &Vec::new(),
             &params.colors,
             true,
+            consensus_labels,
+            num_motifs,
         );
         pipes.push(pipe);
         ypos += allele_height + params.pipe_pad;
@@ -51,11 +98,11 @@ pub fn plot_alleles(
         }
 
         // TODO: Confirm that this allele / index correspondence is always correct
-        for (align, betas) in &allele.reads {
-            let (colors, betas) = if what_to_show == "meth" {
-                (get_meth_colors(&locus.motifs), betas.clone())
+        for (align, betas, labels) in &allele.reads {
+            let (colors, betas, labels) = if what_to_show == "meth" {
+                (get_meth_colors(&locus.motifs), betas.clone(), Vec::new())
             } else {
-                (params.colors.clone(), Vec::new())
+                (params.colors.clone(), Vec::new(), labels.clone())
             };
 
             let pipe = get_pipe(
@@ -66,6 +113,8 @@ pub fn plot_alleles(
                 &betas,
                 &colors,
                 false,
+                labels,
+                num_motifs,
             );
             pipes.push(pipe);
             ypos += params.pipe_height + params.pipe_pad;
@@ -110,6 +159,8 @@ fn get_pipe(
     betas: &Betas,
     colors: &ColorMap,
     outline: bool,
+    labels: Vec<TextLabel>,
+    num_motifs: usize,
 ) -> Pipe {
     let mut segs = Vec::new();
     for align_seg in align {
@@ -125,10 +176,15 @@ fn get_pipe(
         } else {
             &Color::Black
         };
+        let dashed = match align_seg.seg_type {
+            SegType::Tr(idx) if idx == num_motifs => true,
+            _ => false,
+        };
         segs.push(Seg {
             width: align_seg.width as u32,
             color: color.to_string(),
             shape,
+            dashed,
         });
     }
 
@@ -151,5 +207,6 @@ fn get_pipe(
         segs,
         bands,
         outline,
+        labels,
     }
 }

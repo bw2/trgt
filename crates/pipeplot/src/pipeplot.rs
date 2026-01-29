@@ -10,11 +10,20 @@ pub enum Shape {
 
 pub type Color = String;
 
+/// A text label to render on a pipe
+#[derive(Debug, Clone)]
+pub struct TextLabel {
+    pub pos: u32,       // Position within pipe (in bp units from pipe start)
+    pub text: char,     // Single character (A/T/G/C/N)
+    pub color: Color,   // Color for this base
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Seg {
     pub width: u32,
     pub color: Color,
     pub shape: Shape,
+    pub dashed: bool,   // if true, draw with dashed stroke
 }
 
 #[derive(Debug)]
@@ -31,6 +40,7 @@ pub struct Pipe {
     pub height: u32,
     pub segs: Vec<Seg>,
     pub bands: Vec<Band>,
+    pub labels: Vec<TextLabel>,
     pub outline: bool,
 }
 
@@ -52,8 +62,8 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
-            family: "Roboto Mono".to_string(),
-            weight: "bold".to_string(),
+            family: "Arial Black, Helvetica Bold, sans-serif".to_string(),
+            weight: "900".to_string(),
             size: "14px".to_string(),
         }
     }

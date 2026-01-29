@@ -82,6 +82,11 @@ pub enum Color {
     Khaki,
     PaleRed,
     PaleBlue,
+    BaseA, // #FF6347 (tomato red)
+    BaseT, // #FCA100 (orange/yellow)
+    BaseG, // #2F8734 (green)
+    BaseC, // #393939 (dark gray/charcoal)
+    BaseN, // #000000 (black)
     Grad(f64),
 }
 
@@ -89,10 +94,10 @@ impl fmt::Display for Color {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Color::Purple => write!(formatter, "#814ED1"),
-            Color::Blue => write!(formatter, "#1383C6"),
+            Color::Blue => write!(formatter, "#bccbe8"),
             Color::Orange => write!(formatter, "#E16A2C"),
-            Color::Teal => write!(formatter, "#009CA2"),
-            Color::Gray => write!(formatter, "#7E7F7F"),
+            Color::Teal => write!(formatter, "#e0e0e0"),
+            Color::Gray => write!(formatter, "#BFBFBF"),
             Color::LightGray => write!(formatter, "#D1D1D1"),
             Color::Black => write!(formatter, "#000000"),
             Color::Pink => write!(formatter, "#ED3981"),
@@ -102,6 +107,11 @@ impl fmt::Display for Color {
             Color::Khaki => write!(formatter, "#F0E68C"),
             Color::PaleRed => write!(formatter, "#FF4858"),
             Color::PaleBlue => write!(formatter, "#46B2E8"),
+            Color::BaseA => write!(formatter, "#22AA22"),
+            Color::BaseT => write!(formatter, "#DD0000"),
+            Color::BaseG => write!(formatter, "#CC9900"),
+            Color::BaseC => write!(formatter, "#2222DD"),
+            Color::BaseN => write!(formatter, "#000000"),
             Color::Grad(value) => write!(formatter, "{}", get_gradient(*value)),
         }
     }
@@ -115,4 +125,16 @@ fn get_gradient(value: f64) -> String {
     let mix_blue = (blue.2 as f64 * (1.0 - value) + red.2 as f64 * value).round() as u8;
 
     format!("#{:02X}{:02X}{:02X}", mix_red, mix_green, mix_blue)
+}
+
+/// Returns the display color for a nucleotide base
+pub fn base_color(base: u8) -> Color {
+    match base {
+        b'A' | b'a' => Color::BaseA,
+        b'T' | b't' => Color::BaseT,
+        b'G' | b'g' => Color::BaseG,
+        b'C' | b'c' => Color::BaseC,
+        b'N' | b'n' => Color::BaseN,
+        _ => Color::Black,
+    }
 }

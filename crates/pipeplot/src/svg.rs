@@ -1,8 +1,8 @@
 use crate::pipeplot::{Color, FontConfig, Legend, Pipe, PipePlot, Shape};
 use std::{fs, path::Path};
 
-const DEFAULT_X_SCALE: f64 = 750.0;
-const DEFAULT_Y_SCALE: f64 = 3.0;
+const DEFAULT_X_SCALE: f64 = 2500.0;
+const DEFAULT_Y_SCALE: f64 = 4.5;
 const DEFAULT_PADDING: f64 = 12.0;
 
 pub fn generate_string(plot: &PipePlot) -> String {
@@ -68,7 +68,7 @@ impl Generator {
         let height = self.to_y(legend.height);
         let mut x = base_x;
         for (label, color) in &legend.labels {
-            self.add_rect((x, base_y), (height, height), color, false);
+            self.add_rect((x, base_y), (height, height), color, false, false);
             x += height + 2.0;
             let point = format!("x=\"{}\" y=\"{}\"", x, base_y + height - 1.0);
             let font_style = format!(
@@ -93,7 +93,7 @@ impl Generator {
         for seg in &pipe.segs {
             let dims = (self.to_x(seg.width), pipe_height);
             match &seg.shape {
-                Shape::Rect => self.add_rect((x_cur, y), dims, &seg.color, add_highlight),
+                Shape::Rect => self.add_rect((x_cur, y), dims, &seg.color, add_highlight, seg.dashed),
                 Shape::HLine => self.add_hline((x_cur, y), dims, &seg.color, stroke),
                 Shape::Tick(label) => self.add_tick((x_cur, y), dims, &seg.color, *label, font),
                 Shape::None | Shape::VLine => {}
@@ -121,7 +121,51 @@ impl Generator {
         for band in &pipe.bands {
             let beta_x = x + self.to_x(band.pos);
             let dims = (self.to_x(1), pipe_height);
-            self.add_rect((beta_x, y), dims, &band.color, false);
+            self.add_rect((beta_x, y), dims, &band.color, false, false);
+        }
+
+        // Plot labels (rendered last so they appear on top)
+        self.plot_labels(pipe, font);
+    }
+
+    fn plot_labels(&mut self, pipe: &Pipe, font: &FontConfig) {
+        if pipe.labels.is_empty() {
+            return;
+        }
+
+        let pipe_height_pixels = self.to_y(pipe.height);
+
+        // Squished mode: use logical height (pipe.height), not pixel height
+        // pipe.height == 1 corresponds to squished mode in PlotParams
+        if pipe.height <= 1 {
+            for label in &pipe.labels {
+                let x = self.to_x(pipe.xpos + label.pos) + self.pad;
+                let y = self.to_y(pipe.ypos) + self.pad;
+                let width = self.to_x(1);
+                // Draw a small colored rectangle at the label position
+                let rect = format!(
+                    r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" />"#,
+                    x, y, width, pipe_height_pixels, label.color
+                );
+                self.add_line(&rect);
+            }
+            return;
+        }
+
+        // Normal mode: render text labels
+        // Scale font size relative to pipe height (~60% of height, clamped 6-14px)
+        let font_size = (pipe_height_pixels * 0.6).max(6.0).min(14.0);
+
+        for label in &pipe.labels {
+            let x = self.to_x(pipe.xpos + label.pos) + self.pad + self.to_x(1) / 2.0;
+            let y = self.to_y(pipe.ypos) + self.pad + pipe_height_pixels / 2.0;
+
+            // Use fill (not stroke) for text color, use font config
+            let text_elem = format!(
+                r#"<text x="{}" y="{}" dy="0.25em" text-anchor="middle" font-family="{}" font-weight="{}" font-size="{}px" fill="{}">{}</text>"#,
+                x, y, font.family, font.weight, font_size, label.color, label.text
+            );
+            self.add_line(&text_elem);
         }
     }
 
@@ -139,14 +183,20 @@ impl Generator {
         self.add_line(&line);
     }
 
-    fn add_rect(&mut self, pos: (f64, f64), dims: (f64, f64), color: &Color, add_highlight: bool) {
+    fn add_rect(&mut self, pos: (f64, f64), dims: (f64, f64), color: &Color, add_highlight: bool, dashed: bool) {
         let (x, y) = pos;
         let (w, h) = dims;
 
         let pos = format!("x=\"{}\" y=\"{}\"", x, y);
         let dim = format!("height=\"{}\" width=\"{}\"", h, w);
 
-        let style = format!("fill=\"{}\" stroke=\"{}\" stroke-width=\"0\"", color, color);
+        let stroke_style = if dashed {
+            r##"stroke="#000000" stroke-width="1" stroke-dasharray="2,2""##.to_string()
+        } else {
+            format!(r#"stroke="{}" stroke-width="0""#, color)
+        };
+
+        let style = format!("fill=\"{}\" {}", color, stroke_style);
 
         let rect = format!("<rect {} {} {} opacity=\"0.9\" />", pos, dim, style);
         self.add_line(&rect);
