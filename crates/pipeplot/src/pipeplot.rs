@@ -52,6 +52,16 @@ pub struct Legend {
     pub labels: Vec<(String, String)>,
 }
 
+/// A vertical grid line spanning a region
+#[derive(Debug)]
+pub struct GridLine {
+    pub xpos: u32,
+    pub y_start: u32,
+    pub y_end: u32,
+    pub label_y: u32,  // Y position for the label (top of reads section)
+    pub label: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct FontConfig {
     pub family: String,
@@ -74,6 +84,7 @@ pub struct PipePlot {
     pub pipes: Vec<Pipe>,
     pub legend: Legend,
     pub font: FontConfig,
+    pub grid_lines: Vec<GridLine>,
 }
 
 impl PipePlot {

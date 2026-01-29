@@ -286,6 +286,7 @@ pub fn plot(
         pipes,
         legend,
         font: FontConfig::default(),
+        grid_lines: Vec::new(),
     }
 }
 

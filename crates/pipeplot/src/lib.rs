@@ -17,4 +17,4 @@ mod svg;
 
 pub use common::prepare_svg_tree;
 pub use image::generate as generate_image;
-pub use pipeplot::{Band, Color, FontConfig, Legend, Pipe, PipePlot, Seg, Shape, TextLabel};
+pub use pipeplot::{Band, Color, FontConfig, GridLine, Legend, Pipe, PipePlot, Seg, Shape, TextLabel};

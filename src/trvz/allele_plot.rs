@@ -5,7 +5,7 @@ use super::scale::get_multi_scale;
 use crate::trvz::align::{Align, AlignOp};
 use crate::utils::{locus::InputLocus, read::Betas, read::Read};
 use itertools::Itertools;
-use pipeplot::{Band, FontConfig, Legend, Pipe, PipePlot, Seg, Shape, TextLabel};
+use pipeplot::{Band, FontConfig, GridLine, Legend, Pipe, PipePlot, Seg, Shape, TextLabel};
 
 /// Map sequence positions to alignment (pipe) positions
 /// Returns a vector where result[seq_idx] = pipe_x_position
@@ -72,11 +72,25 @@ pub fn plot_alleles(
     let xpos = 0;
     let mut ypos = 0;
     let mut pipes = Vec::new();
+    let mut grid_lines = Vec::new();
     let num_motifs = locus.motifs.len();
+
+    // Get the primary motif length for grid spacing
+    let motif_len = locus.motifs.first().map(|m| m.len()).unwrap_or(3);
+
     for (allele_index, (allele_seq, allele)) in aligns_by_allele.iter().enumerate() {
         let scale_pipes = get_multi_scale(xpos, ypos, allele_height, &allele.seq, locus);
         pipes.extend(scale_pipes);
-        ypos += allele_height;
+
+        ypos += allele_height;  // After scale row
+        ypos += allele_height;  // Padding between scale and consensus
+
+        // Track y_start for grid lines (at consensus row)
+        let y_start = ypos;
+
+        // Grid labels positioned just above consensus (bottom of label touches top of consensus)
+        let label_y = y_start;
+
         let consensus_labels = get_consensus_labels(allele_seq, &allele.seq);
         let pipe = get_pipe(
             xpos,
@@ -120,6 +134,42 @@ pub fn plot_alleles(
             ypos += params.pipe_height + params.pipe_pad;
         }
 
+        // Calculate y_end for grid lines (after all reads)
+        let y_end = ypos;
+
+        // Calculate grid line positions for this allele
+        // Find the TR region start (after left flank)
+        let tr_start: u32 = allele
+            .seq
+            .iter()
+            .take_while(|seg| seg.seg_type == SegType::LeftFlank)
+            .map(|seg| seg.width as u32)
+            .sum();
+
+        // Find the TR region length
+        let tr_len: u32 = allele
+            .seq
+            .iter()
+            .filter(|seg| matches!(seg.seg_type, SegType::Tr(_)))
+            .map(|seg| seg.width as u32)
+            .sum();
+
+        // Add grid lines every 5 repeats
+        let bp_per_5_repeats = (5 * motif_len) as u32;
+        let mut repeat_count = 5;
+        let mut grid_x = tr_start + bp_per_5_repeats;
+        while grid_x < tr_start + tr_len {
+            grid_lines.push(GridLine {
+                xpos: grid_x,
+                y_start,
+                y_end,
+                label_y,
+                label: Some(format!("{}x", repeat_count)),
+            });
+            repeat_count += 5;
+            grid_x += bp_per_5_repeats;
+        }
+
         if allele_index + 1 != aligns_by_allele.len() {
             ypos += 7;
         }
@@ -148,6 +198,7 @@ pub fn plot_alleles(
         pipes,
         legend,
         font: FontConfig::default(),
+        grid_lines,
     }
 }
 

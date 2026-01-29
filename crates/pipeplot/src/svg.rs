@@ -1,4 +1,4 @@
-use crate::pipeplot::{Color, FontConfig, Legend, Pipe, PipePlot, Shape};
+use crate::pipeplot::{Color, FontConfig, GridLine, Legend, Pipe, PipePlot, Shape};
 use std::{fs, path::Path};
 
 const DEFAULT_X_SCALE: f64 = 2500.0;
@@ -46,6 +46,11 @@ impl Generator {
         self.start_svg(width, height);
         self.add_background();
 
+        // Draw grid lines first (behind pipes)
+        for grid_line in &pipe_plot.grid_lines {
+            self.plot_grid_line(grid_line, &pipe_plot.font);
+        }
+
         for pipe in &pipe_plot.pipes {
             self.plot_pipe(pipe, &pipe_plot.font);
             if pipe.outline {
@@ -78,6 +83,29 @@ impl Generator {
             let line = format!("<text {} {} >{}</text>", point, font_style, label);
             self.add_line(&line);
             x += 5.0 * (2 * label.len() as u32 + 1) as f64;
+        }
+    }
+
+    fn plot_grid_line(&mut self, grid_line: &GridLine, font: &FontConfig) {
+        let x = self.to_x(grid_line.xpos) + self.pad;
+        let y1 = self.to_y(grid_line.y_start) + self.pad;
+        let y2 = self.to_y(grid_line.y_end) + self.pad;
+        let label_y = self.to_y(grid_line.label_y) + self.pad;
+
+        // Draw dashed vertical line
+        let line_elem = format!(
+            r##"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="#999999" stroke-width="1" stroke-dasharray="3,3" />"##,
+            x, y1, x, y2
+        );
+        self.add_line(&line_elem);
+
+        // Draw label if present (just above consensus, with 2px gap)
+        if let Some(label) = &grid_line.label {
+            let text_elem = format!(
+                r##"<text x="{}" y="{}" font-family="{}" font-weight="{}" font-size="11px" text-anchor="middle" fill="#666666">{}</text>"##,
+                x, label_y - 5.0, font.family, font.weight, label
+            );
+            self.add_line(&text_elem);
         }
     }
 
@@ -251,37 +279,56 @@ impl Generator {
     ) {
         let x1 = pos.0;
         let x2 = pos.0 + dims.0;
-        let y1 = pos.1 + dims.1 / 2.0;
-        let y2 = y1;
+        let y_center = pos.1 + dims.1 / 2.0;
 
-        let x1y1 = format!("x1=\"{}\" y1=\"{}\"", x1, y1);
-        let x2y2 = format!("x2=\"{}\" y2=\"{}\"", x2, y2);
+        let x1y1 = format!("x1=\"{}\" y1=\"{}\"", x1, y_center);
+        let x2y2 = format!("x2=\"{}\" y2=\"{}\"", x2, y_center);
 
         let style = format!("stroke=\"{}\" stroke-width=\"{}\"", color, stroke);
 
+        // Draw the arrow line first (behind the label)
         let line = format!("<line {} {} {} />", x1y1, x2y2, style);
         self.add_line(&line);
 
-        let arrow_pt1 = format!("{} {}", x1, y1);
-        let arrow_pt2 = format!("{} {}", x1 + 5.0, y1 + 5.0);
-        let arrow_pt3 = format!("{} {}", x1 + 5.0, y1 - 5.0);
+        let arrow_pt1 = format!("{} {}", x1, y_center);
+        let arrow_pt2 = format!("{} {}", x1 + 5.0, y_center + 5.0);
+        let arrow_pt3 = format!("{} {}", x1 + 5.0, y_center - 5.0);
         let left_arrow = format!("<polygon points=\"{arrow_pt1}, {arrow_pt2}, {arrow_pt3}\"/>");
         self.add_line(&left_arrow);
 
-        let arrow_pt1 = format!("{} {}", x2, y2);
-        let arrow_pt2 = format!("{} {}", x2 - 5.0, y2 - 5.0);
-        let arrow_pt3 = format!("{} {}", x2 - 5.0, y2 + 5.0);
+        let arrow_pt1 = format!("{} {}", x2, y_center);
+        let arrow_pt2 = format!("{} {}", x2 - 5.0, y_center - 5.0);
+        let arrow_pt3 = format!("{} {}", x2 - 5.0, y_center + 5.0);
         let right_arrow = format!("<polygon points=\"{arrow_pt1}, {arrow_pt2}, {arrow_pt3}\"/>");
         self.add_line(&right_arrow);
 
         if let Some(label) = label {
-            let point = format!("x=\"{}\" y=\"{}\"", (x1 + x2) / 2.0, pos.1);
+            let label_x = (x1 + x2) / 2.0;
+            // Estimate label width based on character count (rough approximation)
+            let char_width = 10.0;
+            let label_width = label.len() as f64 * char_width + 8.0;
+            let label_height = 16.0;
+
+            // Draw white background rectangle behind the label
+            let bg_rect = format!(
+                r##"<rect x="{}" y="{}" width="{}" height="{}" fill="white" />"##,
+                label_x - label_width / 2.0,
+                y_center - label_height / 2.0,
+                label_width,
+                label_height
+            );
+            self.add_line(&bg_rect);
+
+            // Draw the label centered on the arrow line
             let font_style = format!(
-                r#"font-family="{}" font-weight="{}" font-size="{}" text-anchor="middle""#,
+                r#"font-family="{}" font-weight="{}" font-size="{}" text-anchor="middle" dominant-baseline="middle""#,
                 font.family, font.weight, font.size
             );
-            let line = format!("<text {} {} >{}</text>", point, font_style, label);
-            self.add_line(&line);
+            let text_elem = format!(
+                r#"<text x="{}" y="{}" {} >{}</text>"#,
+                label_x, y_center, font_style, label
+            );
+            self.add_line(&text_elem);
         }
     }
 
