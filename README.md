@@ -1,4 +1,42 @@
-<h1 align="center"><img width="300px" src="docs/figures/logo_TRGT.svg"/></h1>
+
+## TRGT fork
+
+This fork takes the [official version of TRGT](https://github.com/pacificBiosciences/trgt) and modifies the **plot** subcommand to:
+* Show mismatched bases
+* Use easier-to-read fonts and colors similar to the ones in IGV
+* Change the repeat width label above the plot to repeat counts instead of base pairs
+* Add vertical gridlines and labels across the repeat interval showing 5x, 10x, .. repeats
+* Label each insertion with the number of bases inserted  (eg. the vertical line "|" now appears as "|3" if 3bp were inserted)
+* Increase the default image width
+
+<br />
+
+### Examples
+
+#### Allele Plot:
+
+<img width="1568" height="478" alt="image" src="https://github.com/user-attachments/assets/88f51150-5abe-454d-a8cc-e835ddd533b0" />
+
+#### Waterfall Plot:
+
+<img width="1576" height="407" alt="image" src="https://github.com/user-attachments/assets/aea9e3fa-7979-4447-9617-529cffd80b40" />
+
+
+#### Allele Plot with Methylation:
+
+<img width="1575" height="469" alt="image" src="https://github.com/user-attachments/assets/fbfc4374-2c20-4f7a-be95-b92a9a3887b0" />
+
+#### Waterfall Plot with Methylation:
+
+<img width="1581" height="411" alt="image" src="https://github.com/user-attachments/assets/1a8bbe14-51cd-4a40-b8db-881102bcbad8" />
+
+
+#### Deep Dive:
+
+<img width="1571" height="294" alt="image" src="https://github.com/user-attachments/assets/b2102081-a9c6-4a6c-88b4-5997d3381d99" />
+
+
+
 
 <h1 align="center">TRGT</h1>
 
