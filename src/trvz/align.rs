@@ -14,6 +14,7 @@ pub struct AlignSeg {
     pub width: usize,
     pub op: AlignOp,
     pub seg_type: SegType,
+    pub insertion_size: usize,  // For Ins operations, stores the actual insertion size
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -13,6 +13,7 @@ pub fn align_consensus(locus: &InputLocus, consensus: &[u8]) -> Vec<AlignSeg> {
         width: locus.left_flank.len(),
         op: AlignOp::Match,
         seg_type: SegType::LeftFlank,
+        insertion_size: 0,
     }];
     let query = &consensus[locus.left_flank.len()..consensus.len() - locus.right_flank.len()];
     let query_align = align_motifs(&locus.motifs, query);
@@ -22,6 +23,7 @@ pub fn align_consensus(locus: &InputLocus, consensus: &[u8]) -> Vec<AlignSeg> {
         width: locus.right_flank.len(),
         op: AlignOp::Match,
         seg_type: SegType::RightFlank,
+        insertion_size: 0,
     });
     align
 }
@@ -67,21 +69,25 @@ pub fn align_motifs(motifs: &[Vec<u8>], seq: &[u8]) -> Vec<AlignSeg> {
                 width: 0,
                 op: AlignOp::Ins,
                 seg_type,
+                insertion_size: width,
             }),
             HmmEvent::Ins => align.push(AlignSeg {
                 width,
                 op: AlignOp::Del,
                 seg_type,
+                insertion_size: 0,
             }),
             HmmEvent::Match => align.push(AlignSeg {
                 width,
                 op: AlignOp::Match,
                 seg_type,
+                insertion_size: 0,
             }),
             HmmEvent::Mismatch => align.push(AlignSeg {
                 width,
                 op: AlignOp::Subst,
                 seg_type,
+                insertion_size: 0,
             }),
             HmmEvent::Skip => {
                 assert_eq!(seg_type, SegType::Tr(motifs.len()));
@@ -89,6 +95,7 @@ pub fn align_motifs(motifs: &[Vec<u8>], seq: &[u8]) -> Vec<AlignSeg> {
                     width,
                     op: AlignOp::Match,
                     seg_type,
+                    insertion_size: 0,
                 })
             }
         }
@@ -106,11 +113,14 @@ pub fn align_motifs(motifs: &[Vec<u8>], seq: &[u8]) -> Vec<AlignSeg> {
         .into_iter()
         .chunk_by(|seg| (seg.op.clone(), seg.seg_type));
     for ((op, segment), group) in &iter {
-        let width: usize = group.into_iter().map(|s| s.width).sum();
+        let segs: Vec<_> = group.into_iter().collect();
+        let width: usize = segs.iter().map(|s| s.width).sum();
+        let insertion_size: usize = segs.iter().map(|s| s.insertion_size).sum();
         merged_align.push(AlignSeg {
             width,
             op,
             seg_type: segment,
+            insertion_size,
         });
     }
 

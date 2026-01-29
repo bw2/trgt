@@ -75,21 +75,25 @@ fn convert(consensus_align: &[AlignSeg], wfa_align: &WfaAlign) -> Align {
                 width: run_len,
                 op: AlignOp::Match,
                 seg_type,
+                insertion_size: 0,
             },
             WfaOp::Subst => AlignSeg {
                 width: run_len,
                 op: AlignOp::Subst,
                 seg_type,
+                insertion_size: 0,
             },
             WfaOp::Del => AlignSeg {
                 width: run_len,
                 op: AlignOp::Del,
                 seg_type,
+                insertion_size: 0,
             },
             WfaOp::Ins => AlignSeg {
                 width: 0,
                 op: AlignOp::Ins,
                 seg_type,
+                insertion_size: run_len,
             },
         };
         align.push(align_seg);

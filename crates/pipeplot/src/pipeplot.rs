@@ -2,7 +2,7 @@
 pub enum Shape {
     Rect,
     HLine,
-    VLine,
+    VLine(u32),  // Vertical line for insertions, with insertion size in bp
     None,
     Tick(Option<u32>),
     DoubleArrow(Option<String>),

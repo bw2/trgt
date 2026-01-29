@@ -220,7 +220,7 @@ fn get_pipe(
     for align_seg in align {
         let shape = match align_seg.op {
             AlignOp::Del => Shape::HLine,
-            AlignOp::Ins => Shape::VLine,
+            AlignOp::Ins => Shape::VLine(align_seg.insertion_size as u32),
             AlignOp::Match | AlignOp::Subst => Shape::Rect,
         };
         let color = if align_seg.op == AlignOp::Match {

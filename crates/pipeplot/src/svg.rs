@@ -124,7 +124,7 @@ impl Generator {
                 Shape::Rect => self.add_rect((x_cur, y), dims, &seg.color, add_highlight, seg.dashed),
                 Shape::HLine => self.add_hline((x_cur, y), dims, &seg.color, stroke),
                 Shape::Tick(label) => self.add_tick((x_cur, y), dims, &seg.color, *label, font),
-                Shape::None | Shape::VLine => {}
+                Shape::None | Shape::VLine(_) => {}
                 Shape::DoubleArrow(label) => {
                     self.add_double_arrow((x_cur, y), dims, &seg.color, stroke, label, font)
                 }
@@ -138,8 +138,8 @@ impl Generator {
         for seg in &pipe.segs {
             let dims = (self.to_x(seg.width), pipe_height);
 
-            if seg.shape == Shape::VLine {
-                self.add_vline((x_cur, y), dims, &seg.color);
+            if let Shape::VLine(insertion_size) = seg.shape {
+                self.add_vline((x_cur, y), dims, &seg.color, insertion_size, font);
             }
 
             x_cur += self.to_x(seg.width);
@@ -252,7 +252,7 @@ impl Generator {
         self.add_line(&line);
     }
 
-    fn add_vline(&mut self, pos: (f64, f64), dims: (f64, f64), color: &Color) {
+    fn add_vline(&mut self, pos: (f64, f64), dims: (f64, f64), color: &Color, insertion_size: u32, font: &FontConfig) {
         let x1 = pos.0;
         let x2 = pos.0;
         let y1 = pos.1;
@@ -266,6 +266,19 @@ impl Generator {
 
         let line = format!("<line {} {} {} />", x1y1, x2y2, style);
         self.add_line(&line);
+
+        // Add label showing insertion size (to the right of the line, centered vertically)
+        if insertion_size > 0 {
+            let label = format!("{}", insertion_size);
+            let label_x = x1 + 2.0;  // Just to the right of the line
+            let label_y = (y1 + y2) / 2.0;  // Center vertically on the marker
+            let font_size = (dims.1 * 0.5).max(6.0).min(10.0);
+            let text_elem = format!(
+                r#"<text x="{}" y="{}" font-family="{}" font-weight="{}" font-size="{}px" fill="{}" dominant-baseline="middle">{}</text>"#,
+                label_x, label_y, font.family, font.weight, font_size, color, label
+            );
+            self.add_line(&text_elem);
+        }
     }
 
     fn add_double_arrow(

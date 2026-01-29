@@ -65,6 +65,7 @@ fn align(locus: &InputLocus, longest_read: usize, read: &Read) -> (Align, Vec<Be
             width: deletion_width,
             op: AlignOp::Del,
             seg_type: SegType::RightFlank,
+            insertion_size: 0,
         });
     }
 
@@ -194,21 +195,25 @@ fn convert(wfa_align: &WfaAlign, seg_type: SegType) -> Align {
                 width: run_len,
                 op: AlignOp::Match,
                 seg_type,
+                insertion_size: 0,
             },
             WfaOp::Subst => AlignSeg {
                 width: run_len,
                 op: AlignOp::Subst,
                 seg_type,
+                insertion_size: 0,
             },
             WfaOp::Del => AlignSeg {
                 width: run_len,
                 op: AlignOp::Del,
                 seg_type,
+                insertion_size: 0,
             },
             WfaOp::Ins => AlignSeg {
                 width: 0,
                 op: AlignOp::Ins,
                 seg_type,
+                insertion_size: run_len,
             },
         };
 
@@ -304,7 +309,7 @@ fn get_pipe(
         .map(|align_seg| {
             let shape = match align_seg.op {
                 AlignOp::Del => Shape::HLine,
-                AlignOp::Ins => Shape::VLine,
+                AlignOp::Ins => Shape::VLine(align_seg.insertion_size as u32),
                 AlignOp::Match | AlignOp::Subst => Shape::Rect,
             };
             let color = match align_seg.op {
