@@ -11,7 +11,7 @@ This fork takes the [official version of TRGT](https://github.com/pacificBioscie
 
 <br />
 
-### Examples
+### Example 1:
 
 #### Allele Plot:
 
@@ -38,6 +38,17 @@ Included here for comparison. Deep dive functionality is unchanged.
 <img width="1571" height="294" alt="image" src="https://github.com/user-attachments/assets/b2102081-a9c6-4a6c-88b4-5997d3381d99" />
 
 
+### Example 2:
+
+Pathogenic expansion at the DM2 / CNBP locus. The long allele contains runs of perfect CAGG repeats interrupted by short intervals with non-CAGG sequences (HMM unsegmented regions). 
+
+#### Allele Plot:
+
+<img width="2524" height="1244" alt="image" src="https://github.com/user-attachments/assets/078fc211-267a-4ad2-bdd2-0dc4b7302f5b" />
+
+#### Waterfall Plot:
+
+<img width="2524" height="1095" alt="image" src="https://github.com/user-attachments/assets/c88c4a0e-0e8a-443a-bcfa-5cb59379d5d2" />
 
 
 <h1 align="center">TRGT</h1>
