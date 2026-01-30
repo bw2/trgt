@@ -251,9 +251,9 @@ pub fn plot(
     let xpos = 0;
     let mut ypos = 0;
     let mut pipes = Vec::new();
-    let scale_pipes = get_multi_scale(xpos, ypos, params.pipe_height, &reads.last().unwrap().0, locus);
+    let (scale_pipes, scale_height) = get_multi_scale(xpos, ypos, params.pipe_height, &reads.last().unwrap().0, locus);
     pipes.extend(scale_pipes);
-    ypos += 4;
+    ypos += scale_height;
 
     for (align, betas, mismatch_labels) in reads {
         let (colors, betas, labels) = if what_to_show == "meth" {

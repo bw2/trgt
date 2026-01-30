@@ -79,10 +79,10 @@ pub fn plot_alleles(
     let motif_len = locus.motifs.first().map(|m| m.len()).unwrap_or(3);
 
     for (allele_index, (allele_seq, allele)) in aligns_by_allele.iter().enumerate() {
-        let scale_pipes = get_multi_scale(xpos, ypos, allele_height, &allele.seq, locus);
+        let (scale_pipes, scale_height) = get_multi_scale(xpos, ypos, allele_height, &allele.seq, locus);
         pipes.extend(scale_pipes);
 
-        ypos += allele_height;  // After scale row
+        ypos += scale_height;  // After scale row(s)
         ypos += allele_height;  // Padding between scale and consensus
 
         // Track y_start for grid lines (at consensus row)
@@ -137,37 +137,111 @@ pub fn plot_alleles(
         // Calculate y_end for grid lines (after all reads)
         let y_end = ypos;
 
-        // Calculate grid line positions for this allele
-        // Find the TR region start (after left flank)
-        let tr_start: u32 = allele
-            .seq
-            .iter()
-            .take_while(|seg| seg.seg_type == SegType::LeftFlank)
-            .map(|seg| seg.width as u32)
-            .sum();
+        // Calculate grid line positions for individual motif runs
+        // Collect individual motif runs: (start_x, length, motif_idx)
+        let mut motif_runs: Vec<(u32, u32, usize)> = Vec::new();
+        let mut current_x: u32 = 0;
+        let mut current_motif: Option<usize> = None;
+        let mut run_start_x: u32 = 0;
+        let mut run_length: u32 = 0;
 
-        // Find the TR region length
-        let tr_len: u32 = allele
-            .seq
-            .iter()
-            .filter(|seg| matches!(seg.seg_type, SegType::Tr(_)))
-            .map(|seg| seg.width as u32)
-            .sum();
+        for seg in allele.seq.iter() {
+            match seg.seg_type {
+                SegType::LeftFlank | SegType::RightFlank => {
+                    // Flush any pending motif run
+                    if let Some(motif_idx) = current_motif {
+                        if run_length > 0 {
+                            motif_runs.push((run_start_x, run_length, motif_idx));
+                        }
+                        current_motif = None;
+                        run_length = 0;
+                    }
+                    current_x += seg.width as u32;
+                }
+                SegType::Tr(motif_idx) => {
+                    if motif_idx < num_motifs {
+                        // Recognized motif
+                        if current_motif == Some(motif_idx) {
+                            run_length += seg.width as u32;
+                        } else {
+                            // Flush previous run if any
+                            if let Some(prev_idx) = current_motif {
+                                if run_length > 0 {
+                                    motif_runs.push((run_start_x, run_length, prev_idx));
+                                }
+                            }
+                            run_start_x = current_x;
+                            run_length = seg.width as u32;
+                            current_motif = Some(motif_idx);
+                        }
+                    } else {
+                        // Unsegmented region
+                        if let Some(prev_idx) = current_motif {
+                            if run_length > 0 {
+                                motif_runs.push((run_start_x, run_length, prev_idx));
+                            }
+                            current_motif = None;
+                            run_length = 0;
+                        }
+                    }
+                    current_x += seg.width as u32;
+                }
+            }
+        }
+        // Flush final run
+        if let Some(motif_idx) = current_motif {
+            if run_length > 0 {
+                motif_runs.push((run_start_x, run_length, motif_idx));
+            }
+        }
 
-        // Add grid lines every 5 repeats
-        let bp_per_5_repeats = (5 * motif_len) as u32;
-        let mut repeat_count = 5;
-        let mut grid_x = tr_start + bp_per_5_repeats;
-        while grid_x < tr_start + tr_len {
-            grid_lines.push(GridLine {
-                xpos: grid_x,
-                y_start,
-                y_end,
-                label_y,
-                label: Some(format!("{}x", repeat_count)),
-            });
-            repeat_count += 5;
-            grid_x += bp_per_5_repeats;
+        // Add grid lines for each run >= 15 repeats
+        for (run_start, run_len, motif_idx) in &motif_runs {
+            let this_motif_len = locus.motifs.get(*motif_idx).map(|m| m.len()).unwrap_or(motif_len);
+            let run_repeats = *run_len as usize / this_motif_len;
+
+            // Only add labels for runs >= 15 repeats
+            if run_repeats < 15 {
+                continue;
+            }
+
+            // Calculate step size to avoid label overlap
+            // Estimate: label "XXXx" is ~4 chars * 8 pixels = ~32 pixels + 15px gap = ~47px per label
+            // At x_scale = 2500/longest_pipe, each bp is roughly 2500/longest_pipe pixels
+            // Use allele width as estimate for longest_pipe
+            let allele_width: u32 = allele.seq.iter().map(|seg| seg.width as u32).sum();
+            let pixels_per_bp = if allele_width > 0 { 2500.0 / allele_width as f64 } else { 1.0 };
+            let run_width_pixels = *run_len as f64 * pixels_per_bp;
+            let min_pixels_per_label = 50.0; // Minimum spacing to avoid overlap
+
+            // Calculate how many labels can fit
+            let max_labels = (run_width_pixels / min_pixels_per_label).floor() as usize;
+
+            // Choose step size: start at 5, double until labels fit
+            let mut step = 5usize;
+            while step < run_repeats {
+                let num_labels = run_repeats / step;
+                if num_labels <= max_labels.max(1) {
+                    break;
+                }
+                step *= 2;
+            }
+
+            // Add grid lines for this run, starting from 0
+            let bp_per_step = (step * this_motif_len) as u32;
+            let mut repeat_count = step;
+            let mut grid_x = *run_start + bp_per_step;
+            while grid_x < *run_start + *run_len {
+                grid_lines.push(GridLine {
+                    xpos: grid_x,
+                    y_start,
+                    y_end,
+                    label_y,
+                    label: Some(format!("{}x", repeat_count)),
+                });
+                repeat_count += step;
+                grid_x += bp_per_step;
+            }
         }
 
         if allele_index + 1 != aligns_by_allele.len() {

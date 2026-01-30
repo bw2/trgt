@@ -2,6 +2,7 @@ use super::align::{Align, SegType};
 use super::params::Color;
 use crate::utils::locus::InputLocus;
 use pipeplot::{Pipe, Seg, Shape};
+use std::collections::HashMap;
 
 pub fn get_scale(mut xpos: u32, ypos: u32, height: u32, align: &Align) -> Pipe {
     let lf_len = align
@@ -39,15 +40,19 @@ pub fn get_scale(mut xpos: u32, ypos: u32, height: u32, align: &Align) -> Pipe {
 
 /// Generate scale bars for each contiguous motif region
 /// Iterates through segments in order, advancing position for ALL segment types
+/// When a motif has multiple runs, adds an overarching bp label above the individual labels
+/// Returns (pipes, height_used) where height_used is height or 2*height if overarching label exists
 pub fn get_multi_scale(
     xpos: u32,
     ypos: u32,
     height: u32,
     align: &Align,
     locus: &InputLocus,
-) -> Vec<Pipe> {
-    let mut pipes = Vec::new();
+) -> (Vec<Pipe>, u32) {
     let mut current_x = xpos;
+
+    // Collect runs by motif index: motif_idx -> [(start_x, length), ...]
+    let mut motif_runs: HashMap<usize, Vec<(u32, usize)>> = HashMap::new();
 
     // Track contiguous runs of recognized motifs only (not unsegmented)
     let mut current_motif: Option<usize> = None;
@@ -60,13 +65,10 @@ pub fn get_multi_scale(
                 // Flush any pending motif run
                 if let Some(motif_idx) = current_motif {
                     if run_length > 0 {
-                        pipes.push(create_scale_pipe(
-                            run_start_x,
-                            ypos,
-                            height,
-                            run_length,
-                            &locus.motifs[motif_idx],
-                        ));
+                        motif_runs
+                            .entry(motif_idx)
+                            .or_default()
+                            .push((run_start_x, run_length));
                     }
                     current_motif = None;
                     run_length = 0;
@@ -84,13 +86,10 @@ pub fn get_multi_scale(
                         // Flush previous run if any
                         if let Some(prev_idx) = current_motif {
                             if run_length > 0 {
-                                pipes.push(create_scale_pipe(
-                                    run_start_x,
-                                    ypos,
-                                    height,
-                                    run_length,
-                                    &locus.motifs[prev_idx],
-                                ));
+                                motif_runs
+                                    .entry(prev_idx)
+                                    .or_default()
+                                    .push((run_start_x, run_length));
                             }
                         }
                         // Start new run
@@ -103,13 +102,10 @@ pub fn get_multi_scale(
                     // Flush any pending motif run
                     if let Some(prev_idx) = current_motif {
                         if run_length > 0 {
-                            pipes.push(create_scale_pipe(
-                                run_start_x,
-                                ypos,
-                                height,
-                                run_length,
-                                &locus.motifs[prev_idx],
-                            ));
+                            motif_runs
+                                .entry(prev_idx)
+                                .or_default()
+                                .push((run_start_x, run_length));
                         }
                         current_motif = None;
                         run_length = 0;
@@ -125,17 +121,54 @@ pub fn get_multi_scale(
     // Flush final run if any
     if let Some(motif_idx) = current_motif {
         if run_length > 0 {
+            motif_runs
+                .entry(motif_idx)
+                .or_default()
+                .push((run_start_x, run_length));
+        }
+    }
+
+    // Check if any motif has multiple runs (needs overarching label)
+    let has_overarching = motif_runs.values().any(|runs| runs.len() > 1);
+
+    // If overarching label needed: place it at ypos, individual labels at ypos + height
+    // Otherwise: place individual labels at ypos
+    let individual_ypos = if has_overarching { ypos + height } else { ypos };
+    let height_used = if has_overarching { 2 * height } else { height };
+
+    // Create pipes from collected runs
+    let mut pipes = Vec::new();
+
+    for (motif_idx, runs) in &motif_runs {
+        // Add individual motif annotations
+        for (start_x, length) in runs {
             pipes.push(create_scale_pipe(
-                run_start_x,
+                *start_x,
+                individual_ypos,
+                height,
+                *length,
+                &locus.motifs[*motif_idx],
+            ));
+        }
+
+        // If more than one run, add overarching bp label at the top row
+        if runs.len() > 1 {
+            let min_x = runs.iter().map(|(x, _)| *x).min().unwrap();
+            let max_end = runs.iter().map(|(x, len)| *x + *len as u32).max().unwrap();
+            let total_bp: usize = runs.iter().map(|(_, len)| *len).sum();
+            let span_width = max_end - min_x;
+
+            pipes.push(create_overarching_bp_pipe(
+                min_x,
                 ypos,
                 height,
-                run_length,
-                &locus.motifs[motif_idx],
+                span_width,
+                total_bp,
             ));
         }
     }
 
-    pipes
+    (pipes, height_used)
 }
 
 fn create_scale_pipe(xpos: u32, ypos: u32, height: u32, region_len: usize, motif: &[u8]) -> Pipe {
@@ -151,6 +184,34 @@ fn create_scale_pipe(xpos: u32, ypos: u32, height: u32, region_len: usize, motif
 
     let seg = Seg {
         width: region_len as u32,
+        color: Color::Black.to_string(),
+        shape: Shape::DoubleArrow(Some(label)),
+        dashed: false,
+    };
+
+    Pipe {
+        xpos,
+        ypos,
+        height,
+        segs: vec![seg],
+        bands: Vec::new(),
+        labels: Vec::new(),
+        outline: false,
+    }
+}
+
+/// Create an overarching bp label that spans multiple motif runs
+fn create_overarching_bp_pipe(
+    xpos: u32,
+    ypos: u32,
+    height: u32,
+    span_width: u32,
+    total_bp: usize,
+) -> Pipe {
+    let label = format!("{}bp", total_bp);
+
+    let seg = Seg {
+        width: span_width,
         color: Color::Black.to_string(),
         shape: Shape::DoubleArrow(Some(label)),
         dashed: false,
