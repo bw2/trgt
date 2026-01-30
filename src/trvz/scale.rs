@@ -136,22 +136,78 @@ pub fn get_multi_scale(
     let individual_ypos = if has_overarching { ypos + height } else { ypos };
     let height_used = if has_overarching { 2 * height } else { height };
 
-    // Create pipes from collected runs
+    // Calculate total alignment width for pixel scale estimation
+    // Note: The actual SVG scale depends on the LONGEST pipe in the whole plot,
+    // not just this alignment. To be conservative (detect more overlaps), we cap
+    // pixels_per_bp at 1.5, which assumes the plot could be ~1700+ bp wide.
+    let total_width: u32 = align.iter().map(|seg| seg.width as u32).sum();
+    let pixels_per_bp = if total_width > 0 {
+        (2500.0 / total_width as f64).min(1.5)
+    } else {
+        1.0
+    };
+
+    // Collect all runs with their info for overlap detection: (start_x, length, motif_idx)
+    let mut all_runs: Vec<(u32, usize, usize)> = Vec::new();
+    for (motif_idx, runs) in &motif_runs {
+        for (start_x, length) in runs {
+            all_runs.push((*start_x, *length, *motif_idx));
+        }
+    }
+    // Sort by x position
+    all_runs.sort_by_key(|(x, _, _)| *x);
+
+    // Track occupied label regions (center_x in pixels, half_width in pixels)
+    // Even hidden labels reserve their space to prevent cascading overlaps
+    let mut occupied_regions: Vec<(f64, f64)> = Vec::new();
+
+    // Create pipes from collected runs, checking for label overlap
     let mut pipes = Vec::new();
 
-    for (motif_idx, runs) in &motif_runs {
-        // Add individual motif annotations
-        for (start_x, length) in runs {
-            pipes.push(create_scale_pipe(
+    for (start_x, length, motif_idx) in &all_runs {
+        let motif = &locus.motifs[*motif_idx];
+        let motif_str = std::str::from_utf8(motif).unwrap_or("?");
+        let repeat_count = *length as f64 / motif.len() as f64;
+
+        // Format label to calculate its width
+        let label_text = if (repeat_count - repeat_count.round()).abs() < 0.05 {
+            format!("{} x {}", repeat_count.round() as u32, motif_str)
+        } else {
+            format!("{:.1} x {}", repeat_count, motif_str)
+        };
+
+        // Calculate label center and width in pixels
+        let label_center_bp = *start_x as f64 + *length as f64 / 2.0;
+        let label_center_px = label_center_bp * pixels_per_bp;
+        // Label width: ~10 pixels per char + 8 padding (matching svg.rs logic)
+        let label_width_px = label_text.len() as f64 * 10.0 + 8.0;
+        let label_half_width = label_width_px / 2.0;
+
+        // Check if this label overlaps with any occupied region
+        let overlaps = occupied_regions.iter().any(|(other_center, other_half_width)| {
+            let distance = (label_center_px - other_center).abs();
+            let min_distance = label_half_width + other_half_width + 5.0; // 5px gap
+            distance < min_distance
+        });
+
+        // Always reserve the space (even if we hide this pipe)
+        occupied_regions.push((label_center_px, label_half_width));
+
+        // Only create pipe if label doesn't overlap (skip both arrow and label if overlapping)
+        if !overlaps {
+            pipes.push(create_scale_pipe_with_label(
                 *start_x,
                 individual_ypos,
                 height,
                 *length,
-                &locus.motifs[*motif_idx],
+                motif,
+                Some(label_text),
             ));
         }
+    }
 
-        // If more than one run, add overarching bp label at the top row
+    // Add overarching bp labels for motifs with multiple runs
+    for (_motif_idx, runs) in &motif_runs {
         if runs.len() > 1 {
             let min_x = runs.iter().map(|(x, _)| *x).min().unwrap();
             let max_end = runs.iter().map(|(x, len)| *x + *len as u32).max().unwrap();
@@ -171,21 +227,18 @@ pub fn get_multi_scale(
     (pipes, height_used)
 }
 
-fn create_scale_pipe(xpos: u32, ypos: u32, height: u32, region_len: usize, motif: &[u8]) -> Pipe {
-    let motif_str = std::str::from_utf8(motif).unwrap_or("?");
-    let repeat_count = region_len as f64 / motif.len() as f64;
-
-    // Format: "31 x CAG" or "12.3 x CCG"
-    let label = if (repeat_count - repeat_count.round()).abs() < 0.05 {
-        format!("{} x {}", repeat_count.round() as u32, motif_str)
-    } else {
-        format!("{:.1} x {}", repeat_count, motif_str)
-    };
-
+fn create_scale_pipe_with_label(
+    xpos: u32,
+    ypos: u32,
+    height: u32,
+    region_len: usize,
+    _motif: &[u8],
+    label: Option<String>,
+) -> Pipe {
     let seg = Seg {
         width: region_len as u32,
         color: Color::Black.to_string(),
-        shape: Shape::DoubleArrow(Some(label)),
+        shape: Shape::DoubleArrow(label),
         dashed: false,
     };
 
