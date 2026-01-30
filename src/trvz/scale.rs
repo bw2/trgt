@@ -4,6 +4,19 @@ use crate::utils::locus::InputLocus;
 use pipeplot::{Pipe, Seg, Shape};
 use std::collections::HashMap;
 
+/// Format a number with thousands comma separators (e.g., 1828 -> "1,828")
+fn format_with_commas(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
 pub fn get_scale(mut xpos: u32, ypos: u32, height: u32, align: &Align) -> Pipe {
     let lf_len = align
         .iter()
@@ -18,8 +31,7 @@ pub fn get_scale(mut xpos: u32, ypos: u32, height: u32, align: &Align) -> Pipe {
         .map(|op| op.width)
         .sum::<usize>();
 
-    let mut label = allele_len.to_string();
-    label += "bp";
+    let label = format!("{}bp", format_with_commas(allele_len));
     let segs = vec![Seg {
         width: allele_len as u32,
         color: Color::Black.to_string(),
@@ -240,7 +252,7 @@ fn create_overarching_bp_pipe(
     span_width: u32,
     total_bp: usize,
 ) -> Pipe {
-    let label = format!("{}bp", total_bp);
+    let label = format!("{}bp", format_with_commas(total_bp));
 
     let seg = Seg {
         width: span_width,

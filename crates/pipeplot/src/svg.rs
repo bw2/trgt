@@ -30,6 +30,7 @@ struct Generator {
     scale: (f64, f64),
     pad: f64,
     buffer: String,
+    force_rectangle_labels: bool,
 }
 
 impl Generator {
@@ -38,10 +39,39 @@ impl Generator {
             scale,
             pad,
             buffer: String::with_capacity(10_000),
+            force_rectangle_labels: false,
         }
     }
 
+    /// Check if letters would overlap in any consensus pipe (outline: true)
+    fn would_labels_overlap(&self, pipe_plot: &PipePlot) -> bool {
+        // Find any consensus pipe (identified by outline: true)
+        for pipe in &pipe_plot.pipes {
+            if pipe.outline && !pipe.labels.is_empty() {
+                // Calculate the width per base position in pixels
+                let width_per_base = self.to_x(1);
+
+                // Calculate the font size that would be used for this pipe
+                let pipe_height_pixels = self.to_y(pipe.height);
+                let font_size = (pipe_height_pixels * 0.6).max(6.0).min(14.0);
+
+                // For monospace fonts, character width is roughly 60% of font height
+                let char_width = font_size * 0.6;
+
+                // If width per base is less than character width, letters would overlap
+                if width_per_base < char_width {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn generate(&mut self, pipe_plot: &PipePlot) {
+        // Detect if letters would overlap in any consensus pipe (outline: true)
+        // If so, switch all pipes to rectangle mode for labels
+        self.force_rectangle_labels = self.would_labels_overlap(pipe_plot);
+
         let (width, height) = self.get_dimensions(pipe_plot);
         self.start_svg(width, height);
         self.add_background();
@@ -163,9 +193,11 @@ impl Generator {
 
         let pipe_height_pixels = self.to_y(pipe.height);
 
-        // Squished mode: use logical height (pipe.height), not pixel height
-        // pipe.height == 1 corresponds to squished mode in PlotParams
-        if pipe.height <= 1 {
+        // Use rectangles if:
+        // 1. Squished mode (pipe.height <= 1), or
+        // 2. Consensus pipe (outline: true) and letters would overlap
+        let use_rectangles = pipe.height <= 1 || (pipe.outline && self.force_rectangle_labels);
+        if use_rectangles {
             for label in &pipe.labels {
                 let x = self.to_x(pipe.xpos + label.pos) + self.pad;
                 let y = self.to_y(pipe.ypos) + self.pad;
